@@ -34,6 +34,7 @@ add_library(iap2_core
   src/iap2/wireless_control.cpp
   src/iap2/auth_session.cpp
   src/iap2/link.cpp
+  src/airplay/auth_setup.cpp
   src/airplay/airplay_session.cpp
   src/airplay/pairing.cpp
   src/airplay/audio_stream.cpp
@@ -88,3 +89,18 @@ add_test(NAME core_tests COMMAND core_tests)
 
 add_executable(iap2-harness src/main.cpp)
 target_link_libraries(iap2-harness PRIVATE iap2_core iap2_transport iap2_core)
+
+# Native Classic Bluetooth accessory probe and incoming stdio transport.
+if(APPLE)
+  find_program(SWIFTC_EXECUTABLE swiftc REQUIRED)
+  add_custom_command(
+    OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/bt-accessory"
+    COMMAND "${SWIFTC_EXECUTABLE}"
+      -module-cache-path "${CMAKE_CURRENT_BINARY_DIR}/SwiftModuleCache"
+      -O -o "${CMAKE_CURRENT_BINARY_DIR}/bt-accessory"
+      "${CMAKE_CURRENT_SOURCE_DIR}/scripts/bt-accessory.swift"
+      -framework IOBluetooth
+    DEPENDS scripts/bt-accessory.swift
+    VERBATIM)
+  add_custom_target(bluetooth_accessory ALL DEPENDS "${CMAKE_CURRENT_BINARY_DIR}/bt-accessory")
+endif()

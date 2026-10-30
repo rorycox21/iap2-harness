@@ -15,6 +15,7 @@ namespace mfi {
 struct OpenSslSigner::Impl {
     EVP_PKEY* key = nullptr;
     STACK_OF(X509)* chain = nullptr;
+    std::vector<std::uint8_t> bundle;
 };
 
 OpenSslSigner::OpenSslSigner() : d_(std::make_unique<Impl>()) {}
@@ -49,7 +50,14 @@ std::unique_ptr<OpenSslSigner> OpenSslSigner::load(const std::string& cert_path,
         PKCS7* p7 = d2i_PKCS7_bio(bio, nullptr);
         BIO_free(bio);
         if (!p7) { error = "cannot parse PKCS#7"; return nullptr; }
-        s->d_->chain = PKCS7_get0_signers(p7, nullptr, 0);
+        // Certificate-only PKCS#7 bundles have no signerInfos. Read the
+        // embedded certificate set rather than asking for message signers.
+        if (PKCS7_type_is_signed(p7) && p7->d.sign && p7->d.sign->cert)
+            s->d_->chain = X509_chain_up_ref(p7->d.sign->cert);
+        unsigned char* encoded = nullptr;
+        const int encoded_size = i2d_PKCS7(p7, &encoded);
+        if (encoded_size > 0) s->d_->bundle.assign(encoded, encoded + encoded_size);
+        OPENSSL_free(encoded);
         PKCS7_free(p7);
         if (!s->d_->chain || sk_X509_num(s->d_->chain) == 0) {
             error = "no certificates in PKCS#7";
@@ -71,35 +79,27 @@ std::unique_ptr<OpenSslSigner> OpenSslSigner::load(const std::string& cert_path,
 }
 
 std::vector<std::vector<std::uint8_t>> OpenSslSigner::certificateChain() const {
-    std::vector<std::vector<std::uint8_t>> out;
-    if (!d_->chain) return out;
-    for (int i = 0; i < sk_X509_num(d_->chain); ++i) {
-        X509* cert = sk_X509_value(d_->chain, i);
-        unsigned char* der = nullptr;
-        int len = i2d_X509(cert, &der);
-        if (len > 0) out.emplace_back(der, der + len);
-        OPENSSL_free(der);
-    }
-    return out;
+    if (d_->bundle.empty()) return {};
+    // The phone expects the certificate container, not concatenated X.509 DER.
+    return {d_->bundle};
 }
 
 std::vector<std::uint8_t> OpenSslSigner::sign(ByteView challenge,
                                               SignatureEncoding enc) const {
     if (!d_->key || (challenge.size != 0 && challenge.data == nullptr)) return {};
 
-    using MdCtx = std::unique_ptr<EVP_MD_CTX, decltype(&EVP_MD_CTX_free)>;
-    MdCtx ctx(EVP_MD_CTX_new(), EVP_MD_CTX_free);
-    if (!ctx || EVP_DigestSignInit(ctx.get(), nullptr, EVP_sha256(), nullptr, d_->key) != 1)
-        return {};
-
+    // MFi v3 supplies a 32-byte SHA-256 digest. Signing must not hash it again.
+    if (challenge.size != 32 || EVP_PKEY_get_bits(d_->key) != 256 ||
+        !EVP_PKEY_is_a(d_->key, "EC")) return {};
+    using KeyCtx = std::unique_ptr<EVP_PKEY_CTX, decltype(&EVP_PKEY_CTX_free)>;
+    KeyCtx ctx(EVP_PKEY_CTX_new(d_->key, nullptr), EVP_PKEY_CTX_free);
+    if (!ctx || EVP_PKEY_sign_init(ctx.get()) <= 0 ||
+        EVP_PKEY_CTX_set_signature_md(ctx.get(), EVP_sha256()) <= 0) return {};
     std::size_t signature_size = 0;
-    if (EVP_DigestSign(ctx.get(), nullptr, &signature_size,
-                       challenge.data, challenge.size) != 1 || signature_size == 0)
+    if (EVP_PKEY_sign(ctx.get(), nullptr, &signature_size, challenge.data, challenge.size) <= 0)
         return {};
-
     std::vector<std::uint8_t> signature(signature_size);
-    if (EVP_DigestSign(ctx.get(), signature.data(), &signature_size,
-                       challenge.data, challenge.size) != 1)
+    if (EVP_PKEY_sign(ctx.get(), signature.data(), &signature_size, challenge.data, challenge.size) <= 0)
         return {};
     signature.resize(signature_size);
 

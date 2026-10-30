@@ -70,7 +70,8 @@ bool TcpTransport::connect(const std::string& host, std::uint16_t port, int time
     return true;
 }
 
-bool TcpTransport::listen(const std::string& bind_addr, std::uint16_t port, int timeout_ms) {
+bool TcpTransport::listen(const std::string& bind_addr, std::uint16_t port, int timeout_ms,
+                          std::function<void()> on_listening) {
     close();
     fd_ = ::socket(AF_INET, SOCK_STREAM, 0);
     if (fd_ < 0) { std::perror("socket"); return false; }
@@ -100,6 +101,9 @@ bool TcpTransport::listen(const std::string& bind_addr, std::uint16_t port, int 
 
     local_addr_ = (bind_addr.empty() ? "0.0.0.0" : bind_addr) + ":" + std::to_string(port);
     std::fprintf(stderr, "tcp: listening on %s\n", local_addr_.c_str());
+
+    // Readiness means the socket is bound and listening, not that a peer has connected.
+    if (on_listening) on_listening();
 
     // Wait for one connection.
     pollfd pfd{fd_, POLLIN, 0};

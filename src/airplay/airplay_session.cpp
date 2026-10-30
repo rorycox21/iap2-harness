@@ -1,4 +1,5 @@
 #include "airplay/airplay_session.hpp"
+#include "airplay/auth_setup.hpp"
 #include "airplay/mac_video.hpp"
 #include "airplay_crypto.h"
 #include "airplay/tlv.hpp"
@@ -312,6 +313,22 @@ bool AirPlaySession::handleRequest(const std::string& method, const std::string&
         log_.info(std::string("airplay: pair-verify state response; verified=") +
                   (pairing_->pairVerified() ? "yes" : "no"));
         writeResponse(200, "OK", "application/octet-stream", response);
+        return true;
+    }
+
+    if (method == "POST" && path == "/auth-setup") {
+        if (!control_cipher_enabled_ || !pairing_->pairVerified()) {
+            writeResponse(403, "Forbidden", "", {});
+            return true;
+        }
+        const auto response = mfiAuthSetup(body, signer_);
+        if (!response) {
+            log_.warn("airplay: MFi auth-setup request/signing failed");
+            writeResponse(400, "Bad Request", "", {});
+            return true;
+        }
+        log_.info("airplay: MFi auth-setup response generated");
+        writeResponse(200, "OK", "application/octet-stream", *response);
         return true;
     }
 

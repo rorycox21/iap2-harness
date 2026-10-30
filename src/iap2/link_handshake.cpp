@@ -1,5 +1,7 @@
 #include "iap2/link_handshake.hpp"
 #include <cstdio>
+#include <algorithm>
+#include <chrono>
 
 namespace iap2 {
 
@@ -91,43 +93,36 @@ bool LinkHandshake::sendSyn(const SynParams& p) {
 }
 
 bool LinkHandshake::waitForPeerSyn() {
-    std::uint8_t buf[4096];
-    const int n = t_.read(buf, sizeof buf, 5000);
-    if (n <= 0) {
-        log_.warn("no SYN response from phone");
-        return false;
+    std::vector<std::uint8_t> received;
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(15);
+    std::size_t packetLength = 0;
+    for (;;) {
+        while (received.size() >= 2 && !(received[0] == 0xff && received[1] == 0x5a))
+            received.erase(received.begin());
+        if (received.size() >= 9) {
+            packetLength = (static_cast<std::size_t>(received[2]) << 8) | received[3];
+            if (packetLength < 10 || sum_checksum(received.data(), 8) != received[8]) {
+                received.erase(received.begin());
+                continue;
+            }
+            if (received.size() >= packetLength) {
+                if ((received[4] & 0x80) &&
+                    sum_checksum(received.data() + 9, packetLength - 10) == received[packetLength - 1]) break;
+                received.erase(received.begin(), received.begin() + packetLength);
+                continue;
+            }
+        }
+        if (std::chrono::steady_clock::now() >= deadline) {
+            log_.warn("timed out waiting for complete peer SYN");
+            return false;
+        }
+        std::uint8_t chunk[4096];
+        const int n = t_.read(chunk, sizeof chunk, 1000);
+        if (n < 0) { log_.warn("transport closed during SYN"); return false; }
+        if (n > 0) received.insert(received.end(), chunk, chunk + n);
     }
-
-    std::string hex;
-    for (int i = 0; i < n && i < 64; ++i) {
-        char b[4];
-        std::snprintf(b, sizeof b, "%02x ", buf[i]);
-        hex += b;
-    }
-    log_.debug("rx " + std::to_string(n) + " bytes: " + hex);
-
-    if (n < 9 || buf[0] != 0xFF || buf[1] != 0x5A) {
-        log_.warn("SYN response: bad SOP");
-        return false;
-    }
-    const std::uint16_t len = (static_cast<std::uint16_t>(buf[2]) << 8) | buf[3];
-    if (n < len) {
-        log_.warn("SYN response: short packet (" + std::to_string(n) +
-                  " < " + std::to_string(len) + ")");
-        return false;
-    }
-    if ((buf[4] & 0x80) == 0) {
-        log_.warn("SYN response: not a SYN (control=0x" +
-                  std::to_string(buf[4]) + ")");
-        return false;
-    }
-    // Header checksum: sum of all 9 header bytes must be 0 mod 256.
-    std::uint16_t hsum = 0;
-    for (int i = 0; i < 9; ++i) hsum += buf[i];
-    if ((hsum & 0xFF) != 0) {
-        log_.warn("SYN response: header checksum invalid");
-        return false;
-    }
+    const auto* buf = received.data();
+    pending_.assign(received.begin() + packetLength, received.end());
 
     log_.info("received peer SYN, sending ACK");
 
@@ -137,8 +132,8 @@ bool LinkHandshake::waitForPeerSyn() {
     std::vector<std::uint8_t> ack = {
         0xFF, 0x5A, 0x00, 0x09,
         0x40,
-        0x64,                                             // next sequence (99+1)
-        static_cast<std::uint8_t>((peer_seq + 1) & 0xFF), // ack peer_seq+1
+        0x63,     // ACK does not consume a sequence number
+        peer_seq, // reference acknowledges the last received sequence
         0x00
     };
     ack.push_back(sum_checksum(ack.data(), 8));

@@ -37,7 +37,9 @@ public:
     bool perform();
     // Send only the local marker and SYN; useful when the caller captures raw peer bytes.
     bool sendSynOnly();
+    const std::vector<std::uint8_t>& pendingBytes() const { return pending_; }
 private:
+    std::vector<std::uint8_t> pending_;
     transport::Transport& t_;
     log::ILogger& log_;
     bool sendMarker();

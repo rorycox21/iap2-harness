@@ -48,3 +48,67 @@ In the latest pairing attempts, the phone showed a confirmation code and the use
 ## Project plan
 
 See [PLAN.md](PLAN.md) for sequenced milestones from Bluetooth diagnostics through Wi-Fi handoff and the first CarPlay frame.
+
+## Experimental Bluetooth accessory mode
+
+On macOS the normal CMake build also creates `build/bt-accessory`. It publishes
+transient accessory-side iAP2 (`...caff`) and CarPlay SDP records, registers
+incoming RFCOMM callbacks on their assigned channels, and removes the records
+on timeout, SIGINT, SIGTERM or transport shutdown. It does not initiate pairing.
+
+```sh
+# Probe registration for 30 seconds (diagnostics on stderr).
+./build/bt-accessory --advertise --seconds 30
+# Optional temporary 120-second car-audio class lease; restored on exit.
+./build/bt-accessory --advertise --seconds 30 --car-class
+# Receive only from your selected phone and send the harness SYN when it connects.
+./build/iap2-harness --capture --address <iphone-bt-address> \
+  --bt-bridge ./build/bt-accessory
+```
+
+Keep macOS Bluetooth settings open for system-managed discoverability and select
+the Mac from the iPhone if it appears. The helper leaves the system name and Wi-Fi
+settings alone. Its default deadline is 120 seconds; `--seconds` accepts 5–120.
+Only `--address` mode forwards binary stdio, and it rejects other peers and second
+connections. Queued input is read only after the selected phone opens a channel.
+The existing bridge interface can also select this helper for `--receiver` mode;
+MFi credentials and a reachable Wi-Fi network are still required.
+
+A successful local SDP registration does **not** verify on-air CarPlay EIR,
+phone discovery, pairing, or a working CarPlay session. macOS may accept a
+class-change request without exposing a useful readback. Check an independent
+Bluetooth trace before treating discovery as complete. This prototype accepts
+incoming channels; the established outgoing PlayPort transport remains available.
+
+The service UUIDs and receiver roles were cross-checked against the public
+[LIVI SDP definitions](https://github.com/pukikiko/LIVI-Lite/blob/main/native/livi-helperd/crates/livi-bt-host/src/sdp.rs)
+and [Apple wireless CarPlay architecture](https://developer.apple.com/videos/play/wwdc2017/717/).
+
+## Native Mac pairing app
+
+If the CLI pairing helper times out at numeric confirmation, build and launch
+Apple's GUI pairing flow from a real app bundle:
+
+```sh
+./scripts/mac-pairing/build.sh "$PWD/build/iAP2-Pairing.app"
+open ./build/iAP2-Pairing.app
+```
+
+Keep the iPhone Bluetooth settings open, choose the phone in Apple's dialog, and
+approve matching codes. The app checks both `isPaired` and membership in the
+saved device list; it writes `pairing-app-result.log` beside the app bundle.
+The bundle has its own local identity and Bluetooth usage descriptions and is
+ad-hoc signed. It uses IOBluetoothUI's IOBluetoothPairingController instead of
+the CLI's direct IOBluetoothDevicePair callbacks. This GUI route established a
+saved bond with the development iPhone on 30 October 2026 after CLI timeouts.
+The current diagnostic check is scoped to the development phone's address;
+update `scripts/mac-pairing/main.m` for another device before building.
+
+## Authentication-only live probe
+
+After establishing a Bluetooth bond, `--auth-only --address PHONE --mfi-cert
+FILE --mfi-key FILE [--bt-bridge PATH]` runs the real link and MFi exchange and
+exits after the phone sends AuthenticationSucceeded. It defers Wi-Fi handoff.
+MFi v3 signing accepts the 32-byte digest directly; the certificate response
+preserves the DER PKCS#7 container. This probe passed against the development
+iPhone on 30 October 2026. Passing it does not validate AirPlay or media.

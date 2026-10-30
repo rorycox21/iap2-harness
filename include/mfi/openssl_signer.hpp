@@ -7,7 +7,7 @@ namespace mfi {
 
 // Loads a PKCS#8 EC P-256 private key and a PKCS#7 certificate chain from
 // disk, checks that the key matches the leaf certificate, and exposes the
-// Signer interface with SHA-256 ECDSA signing.
+// Signer interface with prehashed MFi v3 ECDSA signing.
 class OpenSslSigner : public Signer {
 public:
     // cert_path: DER PKCS#7 (.p7b)
@@ -22,7 +22,7 @@ public:
 
     std::vector<std::vector<std::uint8_t>> certificateChain() const override;
 
-    // Signs the challenge with SHA-256 ECDSA and returns DER or fixed-width
+    // Signs a 32-byte SHA-256 challenge digest without hashing it again; returns DER or fixed-width
     // 32-byte r || 32-byte s. Returns an empty vector if signing fails.
     std::vector<std::uint8_t> sign(ByteView challenge,
                                    SignatureEncoding enc) const override;

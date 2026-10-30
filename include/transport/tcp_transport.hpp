@@ -1,5 +1,6 @@
 #pragma once
 #include "transport/transport.hpp"
+#include <functional>
 #include <cstdint>
 #include <string>
 
@@ -24,7 +25,7 @@ public:
 
     // Server mode: bind to bind_addr:port and accept one connection.
     // Returns false on bind/listen/accept error.
-    bool listen(const std::string& bind_addr, std::uint16_t port, int timeout_ms = 30000);
+    bool listen(const std::string& bind_addr, std::uint16_t port, int timeout_ms = 30000, std::function<void()> on_listening = {});
 
     // Transport interface.
     bool open() override;   // no-op for TcpTransport; connect/listen already opened

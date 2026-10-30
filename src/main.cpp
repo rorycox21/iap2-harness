@@ -77,11 +77,17 @@ static int run_simulate() {
     printOut("accessory", out);
 
     iap2::Message m2; m2.id = iap2::MsgId::RequestAuthChallengeResponse;
-    m2.payload = {0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88};
+    m2.payload = {0x00, 0x0c, 0x00, 0x00, 0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88};
     std::printf("phone -> %s (nonce %s)\n",
                 "RequestAuthenticationChallengeResponse", hex(m2.payload).c_str());
     out = session.onMessage(m2);
     printOut("accessory", out);
+
+    if (out.size() != 1 || out[0].id != iap2::MsgId::AuthenticationResponse ||
+        session.state() != iap2::AuthState::ChallengeRequested) {
+        std::fprintf(stderr, "simulation failed: no authentication response\n");
+        return 2;
+    }
 
     iap2::Message m3; m3.id = iap2::MsgId::AuthenticationSucceeded;
     std::printf("phone -> %s\n", "AuthenticationSucceeded");
@@ -95,6 +101,7 @@ static int run_simulate() {
 static void usage() {
     std::printf(
         "usage:\n"
+        "  iap2-harness --auth-only --address PHONE --mfi-cert FILE --mfi-key FILE [--bt-bridge PATH]\n"
         "  iap2-harness --simulate\n"
         "  iap2-harness --pipe\n"
         "  iap2-harness --capture --address PHONE [--bt-bridge PATH]\n"
@@ -111,19 +118,22 @@ static void usage() {
 
 static void run_airplay_server(const std::string& bind_addr, std::uint16_t port,
                                std::shared_ptr<airplay::PairingProtocol> pairing,
-                               std::shared_ptr<std::promise<bool>> readiness = {}) {
-    mfi::MockSigner signer;   // AirPlay pairing is separate from iAP2 MFi auth.
+                               std::shared_ptr<std::promise<bool>> readiness = {},
+                               std::shared_ptr<mfi::OpenSslSigner> mfi_signer = {}) {
+    mfi::MockSigner mock_signer;
+    mfi::Signer& signer = mfi_signer ? static_cast<mfi::Signer&>(*mfi_signer) : static_cast<mfi::Signer&>(mock_signer);
     log::StderrLogger log;
     bool first_listener = true;
     for (;;) {
         transport::TcpTransport tcp;
-        if (!tcp.listen(bind_addr, port, 60000)) {
+        if (!tcp.listen(bind_addr, port, 60000, [&] {
+                if (first_listener && readiness) readiness->set_value(true);
+                first_listener = false;
+            })) {
             if (first_listener && readiness) readiness->set_value(false);
             std::fprintf(stderr, "wireless: listen failed\n");
             return;
         }
-        if (first_listener && readiness) readiness->set_value(true);
-        first_listener = false;
         airplay::AirPlaySession session(tcp, signer, log, pairing.get());
         const bool paired = session.run();
         tcp.close();
@@ -179,7 +189,19 @@ static int run_live_iap2(transport::UsbConfig cfg, std::string phone_address,
                          std::shared_ptr<airplay::PairingProtocol> pairing,
                          iap2::IdentificationConfig ident_cfg,
                          iap2::WirelessControlConfig wifi_cfg,
-                         bool start_airplay_after_wifi) {
+                         bool start_airplay_after_wifi, bool auth_only = false) {
+    // AirPlay must be available independently of a new Bluetooth handoff:
+    // a phone that already accepted CarPlay can reconnect directly over Wi-Fi.
+    if (start_airplay_after_wifi) {
+        auto readiness = std::make_shared<std::promise<bool>>();
+        auto ready = readiness->get_future();
+        std::thread(run_airplay_server, bind_addr, port, pairing, readiness, signer).detach();
+        if (ready.wait_for(std::chrono::seconds(5)) != std::future_status::ready || !ready.get()) {
+            log::StderrLogger startup_log;
+            startup_log.error("receiver: AirPlay listener could not start");
+            return 3;
+        }
+    }
     std::unique_ptr<transport::Transport> t;
     if (!phone_address.empty()) {
         if (bt_bridge_path.empty()) {
@@ -213,22 +235,31 @@ static int run_live_iap2(transport::UsbConfig cfg, std::string phone_address,
         return 3;
     }
     iap2::Iap2LinkDecoder decoder;
-    bool airplay_started = false;
+    bool airplay_started = start_airplay_after_wifi;
     bool subscriptions_sent = false;
 
     std::fprintf(stderr, "link loop started; waiting for messages...\n");
     std::uint8_t buf[64 * 1024];
     std::uint8_t tx_sequence = 0x64;
     std::uint64_t acknowledged_packets = 0;
+    bool pending_consumed = false;
     for (;;) {
-        const int got = t->read(buf, sizeof buf, 5000);
+        int got;
+        if (!handshake.pendingBytes().empty() && !pending_consumed) {
+            const auto& pending = handshake.pendingBytes();
+            std::copy(pending.begin(), pending.end(), buf);
+            got = static_cast<int>(pending.size());
+            pending_consumed = true;
+        } else {
+            got = t->read(buf, sizeof buf, 5000);
+        }
         if (got < 0) { std::fprintf(stderr, "read error\n"); break; }
         if (got == 0) continue;
 
         auto msgs = decoder.feed(buf, static_cast<std::size_t>(got));
         if (decoder.dataPacketCount() != acknowledged_packets) {
             auto ack = iap2::Iap2LinkEncoder::acknowledgement(
-                tx_sequence, static_cast<std::uint8_t>(decoder.lastReceivedSequence() + 1));
+                static_cast<std::uint8_t>(tx_sequence - 1), decoder.lastReceivedSequence());
             if (t->write(ack.data(), ack.size()) < 0) {
                 std::fprintf(stderr, "ACK write error\n");
                 break;
@@ -241,12 +272,18 @@ static int run_live_iap2(transport::UsbConfig cfg, std::string phone_address,
             const bool carplay_availability = m.id == static_cast<iap2::MsgId>(0x4300);
             std::vector<iap2::Message> out;
             if (m.id == static_cast<iap2::MsgId>(0x1D00) ||
-                m.id == static_cast<iap2::MsgId>(0x1D02))
+                m.id == static_cast<iap2::MsgId>(0x1D02) ||
+                m.id == static_cast<iap2::MsgId>(0x1D03))
                 out = identification.onMessage(m);
             else if (m.id == static_cast<iap2::MsgId>(0x4300) &&
                      start_airplay_after_wifi &&
                      session.state() != iap2::AuthState::Succeeded) {
                 log.warn("handoff: ignoring CarPlay availability before iAP2 MFi authentication");
+            }
+            else if (auth_only && (m.id == static_cast<iap2::MsgId>(0x4300) ||
+                                  m.id == static_cast<iap2::MsgId>(0x5701) ||
+                                  m.id == static_cast<iap2::MsgId>(0x5702))) {
+                log.info("auth-only: deferring Wi-Fi handoff");
             }
             else if (m.id == static_cast<iap2::MsgId>(0x4300) ||
                      m.id == static_cast<iap2::MsgId>(0x4E0D) ||
@@ -257,7 +294,14 @@ static int run_live_iap2(transport::UsbConfig cfg, std::string phone_address,
             else
                 out = session.onMessage(m);
 
-            if (session.state() == iap2::AuthState::Succeeded && !subscriptions_sent) {
+            if (auth_only && session.state() == iap2::AuthState::Succeeded) {
+                log.info("AUTH SUCCEEDED; authentication-only probe complete");
+                t->close();
+                return 0;
+            }
+            if (auth_only && (m.id == static_cast<iap2::MsgId>(0x4300) ||
+                              m.id == static_cast<iap2::MsgId>(0x5702))) out.clear();
+            if (session.state() == iap2::AuthState::Succeeded && identification.done() && !subscriptions_sent) {
                 auto subscriptions = iap2::controlSubscriptions();
                 out.insert(out.end(), subscriptions.begin(), subscriptions.end());
                 subscriptions_sent = true;
@@ -268,7 +312,7 @@ static int run_live_iap2(transport::UsbConfig cfg, std::string phone_address,
                 session.state() == iap2::AuthState::Succeeded && !airplay_started) {
                 auto readiness = std::make_shared<std::promise<bool>>();
                 auto ready = readiness->get_future();
-                std::thread(run_airplay_server, bind_addr, port, pairing, readiness).detach();
+                std::thread(run_airplay_server, bind_addr, port, pairing, readiness, signer).detach();
                 if (ready.wait_for(std::chrono::seconds(5)) != std::future_status::ready ||
                     !ready.get()) {
                     std::fprintf(stderr, "handoff: AirPlay listener failed to bind; not sending start-session\n");
@@ -281,7 +325,7 @@ static int run_live_iap2(transport::UsbConfig cfg, std::string phone_address,
             bool response_sent = true;
             for (const auto& r : out) {
                 auto frame = iap2::Iap2LinkEncoder::encode(
-                    r, tx_sequence++, static_cast<std::uint8_t>(decoder.lastReceivedSequence() + 1));
+                    r, tx_sequence++, decoder.lastReceivedSequence());
                 if (frame.empty()) {
                     std::fprintf(stderr, "tx: frame too large, dropping\n");
                     response_sent = false;
@@ -392,6 +436,7 @@ int main(int argc, char** argv) {
     bool capture_mode = false;
     bool wireless_mode = false;
     bool receiver_mode = false;
+    bool auth_only = false;
     std::string bind_addr = "0.0.0.0";
     std::string phone_address, bt_bridge_path;
     std::string mfi_cert_path, mfi_key_path;
@@ -407,7 +452,8 @@ int main(int argc, char** argv) {
             if (i + 1 >= argc) { std::fprintf(stderr, "%s needs a value\n", name); std::exit(2); }
             return argv[++i];
         };
-        if (a == "--simulate") simulate = true;
+        if (a == "--auth-only") auth_only = true;
+        else if (a == "--simulate") simulate = true;
         else if (a == "--pipe") pipe_mode = true;
         else if (a == "--capture") capture_mode = true;
         else if (a == "--wireless") wireless_mode = true;
@@ -436,6 +482,7 @@ int main(int argc, char** argv) {
         else { std::fprintf(stderr, "unknown arg: %s\n", a.c_str()); usage(); return 2; }
     }
 
+    if (auth_only && receiver_mode) { std::fprintf(stderr, "--auth-only cannot be combined with --receiver\n"); return 2; }
     if (list) {
         transport::list_usb_devices();
         return 0;
@@ -510,5 +557,5 @@ int main(int argc, char** argv) {
     }
     return run_live_iap2(cfg, phone_address, bt_bridge_path, bind_addr, port,
                          std::move(signer), {}, std::move(ident_cfg),
-                         std::move(wifi_cfg), false);
+                         std::move(wifi_cfg), false, auth_only);
 }

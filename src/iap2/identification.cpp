@@ -53,7 +53,7 @@ Bytes identificationInformation(const IdentificationConfig& c) {
     u16List(body, 6, {0xAA01, 0xAA03, 0x5000, 0x5002, 0x5200, 0x5203,
                       0xAE00, 0xAE02, 0x4157, 0x4159, 0x4154, 0x4156, 0x5703, 0x4301});
     u16List(body, 7, {0xAA00, 0xAA02, 0xAA04, 0xAA05, 0xEA00, 0xEA01, 0x5001,
-                      0x4E0D, 0x4E0E, 0x5204, 0xAE01, 0x4158, 0x4302, 0x4300, 0x5702});
+                      0x5201, 0x5202, 0xAE01, 0x4158, 0x4155, 0x4300, 0x4E0D, 0x4E0E, 0x5702});
     u8(body, 8, 0); u16(body, 9, 20);
 
     Bytes group;
@@ -74,7 +74,7 @@ Bytes identificationInformation(const IdentificationConfig& c) {
 
     group.clear();
     u16(group, 0, 42); text(group, 1, "RouteGuidance"); u16(group, 2, 64);
-    u16(group, 4, 64); u16(group, 6, 8); u16(group, 7, 64); u16(group, 8, 8);
+    u16(group, 4, 64); u16(group, 6, 8);
     param(body, 30, group);
     return body;
 }
@@ -97,6 +97,10 @@ std::vector<Message> Identification::onMessage(const Message& in) {
         response.payload = identificationInformation(config_);
         log_.info("ident: sending IdentificationInformation");
         return {response};
+    }
+    if (in.id == static_cast<MsgId>(0x1D03)) {
+        log_.error("ident: rejected parameters: " + hexPayload(in));
+        return {};
     }
     if (in.id == static_cast<MsgId>(0x1D02)) {
         done_ = true;

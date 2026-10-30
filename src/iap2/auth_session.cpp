@@ -99,6 +99,10 @@ std::vector<Message> AuthSession::onMessage(const Message& in) {
     }
     case MsgId::AuthenticationSucceeded:
         log_.info("auth: AuthenticationSucceeded");
+        if (state_ != AuthState::ChallengeRequested) {
+            log_.warn("auth: ignoring success before a challenge response");
+            return out;
+        }
         state_ = AuthState::Succeeded;
         return out;
     case MsgId::AuthenticationFailed: {

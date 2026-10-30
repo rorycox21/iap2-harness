@@ -1,5 +1,23 @@
 # Project status
 
+## Live validation — 30 October 2026
+
+Apple's native IOBluetoothUI pairing controller, hosted in the new AppKit bundle
+(`scripts/mac-pairing`), established a saved bond with the development iPhone
+where the CLI helper repeatedly timed out at numeric confirmation. Outgoing
+RFCOMM opened and the phone supplied its marker and synchronization packet.
+
+The `--auth-only` live probe now completes successfully: AA00 → AA01 → AA02
+(32-byte digest) → AA03 (64-byte P-256 signature) → AA05. It closes before Wi-Fi
+handoff. This required fixing incremental SYN parsing, ACK sequence semantics,
+control session 10 and CSM 0x4040 framing, certificate-only PKCS#7 loading and
+preserving the container on the wire, and signing the supplied MFi v3 digest
+without hashing it again. The core suite passes 58 checks; an independent
+synthetic-identity check verifies the prehashed signature and container bytes.
+
+Identification acceptance, Wi-Fi handoff, AirPlay negotiation and first frame
+are not yet verified by this successful authentication-only probe.
+
 ## Current state
 
 The C++20 project builds on macOS with the existing Mbed TLS 3.x configuration. It has an RTSP `/info` binary plist handler, an mDNS advertisement script, TCP, pipe, and PlayPort `bt-bridge` transports, the iAP2 message codec, authentication state machine, and a link SYN packet verified against the decompiled DiPlay reference. The active data path now wraps CSM messages in iAP2 link packets and uses the reference additive checksums. The vendored `airplay_crypto` implementation provides SRP client, X25519, Ed25519, ChaCha20, HKDF, TLV8, and binary plist support using Mbed TLS.
