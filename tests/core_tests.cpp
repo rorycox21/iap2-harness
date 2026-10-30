@@ -257,7 +257,41 @@ static void test_mfi_sap() {
     CHECK(plain==signer.mfi::MockSigner::sign(mfi::ByteView(expected),mfi::SignatureEncoding::RawRS));
 }
 
+
+#include "airplay/airplay_session.hpp"
+#include <filesystem>
+#include <unistd.h>
+static void test_phone_record_request() {
+    char directory[] = "/tmp/iap2-rtsp-test-XXXXXX";
+    const char* temporary = ::mkdtemp(directory);
+    CHECK(temporary != nullptr);
+    if (!temporary) return;
+    {
+        airplay::PairingProtocol pairing(std::string(temporary) + "/identity.bin");
+        PhoneCaptureTransport transport;
+        const std::string requests =
+            "RECORD rtsp://192.168.2.1/15713859228542127810 RTSP/1.0\r\nCSeq: 8\r\nContent-Length: 0\r\n\r\n"
+            "OPTIONS * RTSP/1.0\r\nCSeq: 9\r\nContent-Length: 0\r\n\r\n";
+        transport.bytes.assign(requests.begin(), requests.end());
+        transport.chunk = 7;
+        mfi::MockSigner signer;
+        log::BufferLogger logger;
+        airplay::AirPlaySession session(transport, signer, logger, &pairing);
+        CHECK(!session.run());
+        CHECK(transport.writes.size() == 2);
+        if (transport.writes.size() == 2) {
+            const std::string record(transport.writes[0].begin(), transport.writes[0].end());
+            const std::string options(transport.writes[1].begin(), transport.writes[1].end());
+            CHECK(record.find("RTSP/1.0 200 OK\r\n") == 0);
+            CHECK(record.find("CSeq: 8\r\n") != std::string::npos);
+            CHECK(options.find("CSeq: 9\r\n") != std::string::npos);
+        }
+    }
+    std::filesystem::remove_all(temporary);
+}
+
 int main() {
+    test_phone_record_request();
     test_mfi_sap();
     test_live_phone_handshake();
     test_rejected_challenge_cannot_succeed();

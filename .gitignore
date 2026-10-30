@@ -9,3 +9,17 @@ identity/
 *.p7b
 captures/
 *.pklg
+
+# Local credentials, trust state and generated diagnostics
+__pycache__/
+*.py[cod]
+*.pem
+*.key
+.env
+.env.*
+!.env.example
+secrets/
+**/airplay-pairings.bin
+*.log
+*.pcap
+*.pcapng

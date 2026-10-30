@@ -5,6 +5,7 @@
 #include "airplay/tlv.hpp"
 #include "transport/tcp_transport.hpp"
 #include <algorithm>
+#include <chrono>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -61,6 +62,7 @@ void AirPlaySession::writeResponse(int status, const std::string& reason,
                                    const std::string& content_type,
                                    const std::vector<std::uint8_t>& body) {
     std::string head = "RTSP/1.0 " + std::to_string(status) + " " + reason + "\r\n";
+    if (!response_cseq_.empty()) head += "CSeq: " + response_cseq_ + "\r\n";
     if (!content_type.empty())
         head += "Content-Type: " + content_type + "\r\n";
     head += "Content-Length: " + std::to_string(body.size()) + "\r\n";
@@ -137,6 +139,9 @@ bool AirPlaySession::handleRequest(const std::string& method, const std::string&
                                    const std::string& headers,
                                    const std::vector<std::uint8_t>& body,
                                    bool& pairing_seen) {
+    response_cseq_ = find_header(headers, "CSeq");
+    if (response_cseq_.size() > 10 || !std::all_of(response_cseq_.begin(), response_cseq_.end(),
+            [](unsigned char c) { return c >= '0' && c <= '9'; })) response_cseq_.clear();
     log_.info("airplay: " + method + " " + path +
               " (" + std::to_string(body.size()) + " body bytes)");
     if (!headers.empty()) log_.debug("airplay: headers:\n" + headers);
@@ -329,6 +334,12 @@ bool AirPlaySession::handleRequest(const std::string& method, const std::string&
         }
         log_.info("airplay: MFi auth-setup response generated");
         writeResponse(200, "OK", "application/octet-stream", *response);
+        return true;
+    }
+
+    if (method == "RECORD") {
+        log_.info("airplay: RECORD acknowledged; waiting for stream setup");
+        writeResponse(200, "OK", "", {});
         return true;
     }
 
@@ -535,8 +546,14 @@ bool AirPlaySession::handleRequest(const std::string& method, const std::string&
 
 bool AirPlaySession::run() {
     bool pairing_seen = false;
+    bool request_seen = false;
+    const auto initial_deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
     std::vector<std::uint8_t> tmp(8192);
     while (true) {
+        if (!request_seen && std::chrono::steady_clock::now() >= initial_deadline) {
+            log_.warn("airplay: closing idle connection before first request");
+            return pairing_seen;
+        }
         // Try to parse one complete RTSP message from recv_buf_.
         // RTSP messages end with \r\n\r\n + Content-Length bytes.
         auto hdr_end = recv_buf_.find("\r\n\r\n");
@@ -603,6 +620,7 @@ bool AirPlaySession::run() {
         }
         recv_buf_.erase(0, total);
 
+        request_seen = true;
         if (!handleRequest(method, path, headers, body, pairing_seen))
             return pairing_seen;
 

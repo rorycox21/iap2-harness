@@ -126,7 +126,7 @@ static void run_airplay_server(const std::string& bind_addr, std::uint16_t port,
     bool first_listener = true;
     for (;;) {
         transport::TcpTransport tcp;
-        if (!tcp.listen(bind_addr, port, 60000, [&] {
+        if (!tcp.listen(bind_addr, port, -1, [&] {
                 if (first_listener && readiness) readiness->set_value(true);
                 first_listener = false;
             })) {
@@ -291,8 +291,11 @@ static int run_live_iap2(transport::UsbConfig cfg, std::string phone_address,
                      m.id == static_cast<iap2::MsgId>(0x5701) ||
                      m.id == static_cast<iap2::MsgId>(0x5702))
                 out = wireless_control.onMessage(m);
-            else
+            else if (static_cast<std::uint16_t>(m.id) >= 0xAA00 &&
+                     static_cast<std::uint16_t>(m.id) <= 0xAA06)
                 out = session.onMessage(m);
+            else
+                log.debug("iap2: unhandled control/status notification ignored");
 
             if (auth_only && session.state() == iap2::AuthState::Succeeded) {
                 log.info("AUTH SUCCEEDED; authentication-only probe complete");

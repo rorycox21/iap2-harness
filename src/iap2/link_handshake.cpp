@@ -94,7 +94,7 @@ bool LinkHandshake::sendSyn(const SynParams& p) {
 
 bool LinkHandshake::waitForPeerSyn() {
     std::vector<std::uint8_t> received;
-    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(15);
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(60);
     std::size_t packetLength = 0;
     for (;;) {
         while (received.size() >= 2 && !(received[0] == 0xff && received[1] == 0x5a))

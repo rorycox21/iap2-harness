@@ -159,4 +159,4 @@ guard (peer != nil) != args.contains("--advertise"), duration >= 5, duration <= 
 if let peer = peer {
     guard peer.range(of: "^[0-9A-Fa-f]{2}([:-][0-9A-Fa-f]{2}){5}$", options: .regularExpression) != nil else { log("invalid phone address"); exit(2) }
 }
-Accessory().start(peer: peer, seconds: duration, carClass: args.contains("--car-class"))
+Accessory().start(peer: peer, seconds: duration, carClass: args.contains("--car-class") || peer != nil)

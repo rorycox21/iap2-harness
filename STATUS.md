@@ -1,6 +1,92 @@
 # Project status
 
-## Live validation — 30 October 2026
+## Live CarPlay video confirmed — 30 October 2026
+
+The user confirmed the CarPlay interface is visible in the native Mac receiver
+window. The receiver decrypted more than 900 H.264 frames and maintained the
+AirPlay control session. The working network is the Mac-hosted MacCarPlay AP,
+channel 11, bridge100 / 192.168.2.1, with the Pi supplying Ethernet upstream
+(10.42.0.1; Mac DHCP lease 10.42.0.201). The iPhone used 192.168.2.2.
+
+Verified live: Bluetooth RFCOMM, iAP2 synchronization, MFi authentication,
+accepted accessory identification, Wi-Fi handoff, AirPlay pair-setup,
+pair-verify, encrypted control, MFi `/auth-setup`, initial SETUP, RECORD,
+screen stream SETUP, H.264 decryption, decoding and visible display.
+Audio playback and touch interaction have not been validated in this session.
+Non-authentication status notifications such as 0x5001 are now kept out of the
+authentication state machine, eliminating misleading authentication warnings.
+Raw received message IDs remain available in the diagnostic log.
+
+The final blockers were an unimplemented RECORD method and a listening socket
+inherited by the Bluetooth helper. RECORD now returns 200 and RTSP responses
+echo CSeq. TCP sockets use FD_CLOEXEC so the helper cannot keep port 7000 bound
+when the control session closes. Connections with no first request time out
+after ten seconds, preventing an idle Safari preconnect from monopolizing the
+single-session server. A regression test replays the observed RECORD request
+with fragmented input and checks its response and sequence number. Core tests
+passed after these fixes. The helper also retains the selected device, opens
+authenticated base connections, guards reentrant callbacks, and lets RFCOMM
+close callbacks finish on EOF/SIGTERM/SIGINT.
+
+The running secure launcher is the session workspace's
+`work/start-hotspot-receiver.py`; it keeps the entered hotspot password only in
+memory and supports controlled SIGUSR1 restarts. No hotspot password is stored
+in this repository. The current receiver and hotspot have been left running.
+
+## Mac hotspot validation — 30 October 2026
+
+The Pi now supplies Ethernet using NetworkManager shared mode. The Mac's USB
+Ethernet service was changed from disabled/static to enabled/DHCP after saving
+its previous configuration in the session workspace. It received 10.42.0.201
+with gateway 10.42.0.1. Internet Sharing is configured from USB Ethernet to
+Wi-Fi, SSID MacCarPlay, fixed channel 11, WPA2/WPA3 Personal. The active ap1
+interface is a member of bridge100, with receiver address 192.168.2.1.
+`scripts/mac_hotspot.py` verified this actual AP endpoint. The earlier shared-network
+address and password must not be used for this receiver-hosted network.
+
+Fresh native pairing succeeded again, followed by successful iAP2 MFi
+and identification exchanges. The phone accepted Use CarPlay and requested
+a session. The next live test uses the active Mac hotspot and its existing
+password, entered through a local secure prompt. First video remains unverified.
+
+The iPhone has since joined MacCarPlay manually and confirmed that its CarPlay
+entry is listed and enabled. Toggling Bluetooth off/on on the iPhone cleared
+the stale RFCOMM channel. The subsequent hotspot-mode test completed RFCOMM,
+iAP2 synchronization, MFi authentication, accepted identification and
+CarPlayStartSession advertising 192.168.2.1:7000. No AirPlay TCP connection
+arrived during that attempt. After a user-requested pause, the hotspot and
+AirPlay listener remain active; Bluetooth closed. The next diagnostic is a
+direct iPhone request to the AirPlay endpoint to separate LAN reachability
+from the phone's automatic CarPlay startup.
+
+Earlier reconnect failure diagnosis: Reconnection currently fails before iAP2: the
+Bluetooth daemon reports `OI_RFCOMM_Connect failed (status=911)` / `0x38f`.
+Published OpenInterface status definitions identify 911 as `OI_RFCOMM_DLCI_EXISTS`;
+a stale RFCOMM channel is the current diagnosis to test. A targeted
+`IOBluetoothDevice.closeConnection` returned success but did not clear that
+error. The helper now guards reentrant base-connection callbacks and closes its
+RFCOMM channel on SIGTERM/SIGINT. The iAP2 startup deadline is 60 seconds because
+one real RFCOMM open completed after the former 15-second deadline.
+
+
+## Latest connection work — 30 October 2026
+
+Earlier live testing progressed through MFi authentication, accepted accessory
+identification, Wi-Fi handoff, AirPlay pair-setup/pair-verify and encrypted RTSP.
+The phone requested `/auth-setup`, which was previously unimplemented. That
+handler is now implemented and covered by a peer-side cryptographic round-trip
+check. It still needs live validation; no CarPlay frame has been confirmed.
+
+The current reconnect attempt stalled in Bluetooth service discovery. macOS
+had a saved test-iPhone bond while the iPhone had no Mac entry. Only this test bond
+was removed; fresh pairing is in progress. Direct-address pairing reached
+numeric comparison but returned `0x1f` both from the CLI and from an AppKit
+app; the native pairing controller remains the demonstrated successful path. The AirPlay listener now remains
+available beyond the previous one-minute accept deadline. Build and core tests
+pass. `scripts/carplay.py` automates bond checks, pairing initiation/fallback
+and starting exactly one bridge; the phone must still approve pairing.
+
+## Earlier authentication validation — 30 October 2026
 
 Apple's native IOBluetoothUI pairing controller, hosted in the new AppKit bundle
 (`scripts/mac-pairing`), established a saved bond with the development iPhone

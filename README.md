@@ -1,114 +1,134 @@
 # iap2-harness
 
-An experimental macOS C++ receiver for exploring wireless CarPlay with a Mac window as the initial display target. The project currently builds locally; end-to-end behavior with a live iPhone is not yet verified.
+An experimental macOS wireless CarPlay receiver with a native video window.
+Live iPhone video was confirmed on 30 October 2026 using a Mac-hosted Wi-Fi
+hotspot and an outgoing Bluetooth iAP2 connection.
 
-## What it contains
+![Live CarPlay running in the native macOS receiver window](docs/screenshots/carplay-live.png)
 
-- iAP2 message framing, link synchronization, and the Bluetooth RFCOMM bridge transport.
-- MFi authentication using a caller-supplied certificate and private key.
-- Wireless CarPlay control and Wi-Fi handoff messages reconstructed from the local DiPlay reference. These still need live-device validation.
-- An AirPlay RTSP server with pair-setup/pair-verify, encrypted control, video and PCM audio receive paths, and a native macOS video window.
-- A raw `--pipe` capture mode and a full-duplex `--capture` mode for collecting the iPhone's initial iAP2 response.
+*Actual live session on macOS, 30 October 2026. The terminal shows the encrypted
+AirPlay control session alongside the CarPlay app grid.*
 
-This is a development harness, not a production receiver. Several protocol paths are source-derived but unverified against a live phone. See [STATUS.md](STATUS.md) for the detailed implementation state.
+Verified: Bluetooth link, MFi authentication, accessory identification, Wi-Fi
+handoff, AirPlay pairing and encrypted control, H.264 receive/decode/display.
+Audio and touch are implemented but were not validated in this live session.
 
-## Build on macOS
+## Requirements
 
-The current CMake project uses C++20 and requires OpenSSL, Mbed TLS 3.x, pkg-config, and libusb. The Mbed TLS setup used for the current build is:
+- macOS, Xcode Command Line Tools, Swift, CMake, Python 3 and Homebrew.
+- An iPhone with CarPlay enabled and Bluetooth/Wi-Fi turned on.
+- Your own compatible MFi certificate bundle and matching private key.
+  Credentials are not included. Store them outside this checkout.
+- For a Mac-hosted hotspot: a live Ethernet upstream and Internet Sharing to Wi-Fi.
+  A Raspberry Pi sharing its Wi-Fi connection over Ethernet was used in testing.
+
+## Build from a fresh clone
 
 ```sh
+git clone https://github.com/Rorycox21/iap2-harness.git
+cd iap2-harness
+brew install cmake pkg-config openssl mbedtls@3 libusb
 cmake -S . -B build \
-  -DCMAKE_PREFIX_PATH="$(brew --prefix mbedtls@3)" \
+  -DCMAKE_PREFIX_PATH="$(brew --prefix mbedtls@3);$(brew --prefix openssl)" \
   -DMbedTLS_DIR="$(brew --prefix mbedtls@3)/lib/cmake/MbedTLS"
-cmake --build build
+cmake --build build -j 4
+ctest --test-dir build --output-on-failure
 ```
 
-The project is intended to keep its Mbed TLS 3.x configuration when cross-compilation support is added.
+The macOS build creates `build/iap2-harness`, the patched `build/bt-bridge`
+and the experimental incoming `build/bt-accessory`. The working outgoing
+bridge is included; a separate PlayPort checkout is not required.
 
-## Run modes
+## Set up the Mac hotspot
+
+1. Connect Ethernet to a router or the Pi. Set that Mac network service to DHCP
+   and confirm it has an address and router.
+2. Open **System Settings → General → Sharing → Internet Sharing**.
+3. Share the Ethernet connection **to Wi-Fi**. In Wi-Fi Options, choose a name
+   such as `MacCarPlay`, a fixed channel and WPA2/WPA3 Personal. Set the password
+   yourself in macOS. Enable Internet Sharing.
+4. Verify the actual access point:
 
 ```sh
-./build/iap2-harness --simulate
-./build/iap2-harness --pipe
-./build/iap2-harness --capture --address <iphone-bt-address>
-./build/iap2-harness --address <iphone-bt-address> \
-  --mfi-cert <certificate.der> --mfi-key <private-key.der>
+python3 scripts/mac_hotspot.py
 ```
 
-`--simulate` exercises the authentication state machine with a mock signer. `--pipe` sends the link SYN and hex-logs bytes received on stdin. A one-way shell pipeline cannot carry that SYN back to the Bluetooth bridge; use `--capture --address` for the bridge's full-duplex process transport. The default bridge path points into `~/Desktop/Projects/playport`; override it with `--bt-bridge PATH` if needed.
+The verified test configuration used channel 11 and `192.168.2.1`, but use the
+reported address/channel on your Mac. An enabled sharing switch alone does
+not prove that the access point is broadcasting. Hotspot mode checks an
+already running system hotspot; it does not toggle Internet Sharing for you.
 
-The credential loader expects a DER PKCS#7 certificate bundle and matching DER PKCS#8 private key. Keep these files outside the repository. Never add credentials or captures containing private material to Git.
+For the optional Pi upstream setup, see [Pi Ethernet sharing](docs/PI-UPLINK.md).
 
-## Bluetooth troubleshooting
+## Start with a new iPhone
 
-Wireless CarPlay uses Bluetooth for discovery, pairing/reconnection, iAP2 negotiation, authentication, and Wi-Fi handoff. Wi-Fi carries the AirPlay audio/video session. Apple describes the receiver as a CarPlay-capable Bluetooth accessory with service discovery, iAP2, and CarPlay capability advertising; a generic Mac-to-iPhone Bluetooth bond alone does not implement that receiver behavior ([Apple WWDC17](https://developer.apple.com/videos/play/wwdc2017/717/)).
-
-In the latest pairing attempts, the phone showed a confirmation code and the user approved it, but macOS reported HCI status `0x1f` and no paired-device entry appeared. Bluetooth status `0x1f` is the generic “Unspecified Error,” so it does not identify which side or step failed ([Bluetooth Core Specification](https://www.bluetooth.com/wp-content/uploads/Files/Specification/HTML/Core-60/out/en/architecture%2C-change-history%2C-and-conventions/controller-error-codes.html)). The next useful diagnostic is one PacketLogger trace of a single pairing attempt. PacketLogger is distributed by Apple in Additional Tools for Xcode ([Apple Bluetooth tools](https://developer.apple.com/bluetooth/)). The included `scripts/capture-bt.sh` uses Linux BlueZ `btmon`; it is not the macOS HCI capture method.
-
-## Project plan
-
-See [PLAN.md](PLAN.md) for sequenced milestones from Bluetooth diagnostics through Wi-Fi handoff and the first CarPlay frame.
-
-## Experimental Bluetooth accessory mode
-
-On macOS the normal CMake build also creates `build/bt-accessory`. It publishes
-transient accessory-side iAP2 (`...caff`) and CarPlay SDP records, registers
-incoming RFCOMM callbacks on their assigned channels, and removes the records
-on timeout, SIGINT, SIGTERM or transport shutdown. It does not initiate pairing.
+1. Keep the iPhone unlocked with **Settings → Bluetooth** open. Find its Bluetooth
+   address using the scan helper (or Settings → General → About → Bluetooth).
+   Allow Bluetooth access for your terminal if macOS asks:
 
 ```sh
-# Probe registration for 30 seconds (diagnostics on stderr).
-./build/bt-accessory --advertise --seconds 30
-# Optional temporary 120-second car-audio class lease; restored on exit.
-./build/bt-accessory --advertise --seconds 30 --car-class
-# Receive only from your selected phone and send the harness SYN when it connects.
-./build/iap2-harness --capture --address <iphone-bt-address> \
-  --bt-bridge ./build/bt-accessory
+./build/bt-bridge --scan
 ```
 
-Keep macOS Bluetooth settings open for system-managed discoverability and select
-the Mac from the iPhone if it appears. The helper leaves the system name and Wi-Fi
-settings alone. Its default deadline is 120 seconds; `--seconds` accepts 5–120.
-Only `--address` mode forwards binary stdio, and it rejects other peers and second
-connections. Queued input is read only after the selected phone opens a channel.
-The existing bridge interface can also select this helper for `--receiver` mode;
-MFi credentials and a reachable Wi-Fi network are still required.
-
-A successful local SDP registration does **not** verify on-air CarPlay EIR,
-phone discovery, pairing, or a working CarPlay session. macOS may accept a
-class-change request without exposing a useful readback. Check an independent
-Bluetooth trace before treating discovery as complete. This prototype accepts
-incoming channels; the established outgoing PlayPort transport remains available.
-
-The service UUIDs and receiver roles were cross-checked against the public
-[LIVI SDP definitions](https://github.com/pukikiko/LIVI-Lite/blob/main/native/livi-helperd/crates/livi-bt-host/src/sdp.rs)
-and [Apple wireless CarPlay architecture](https://developer.apple.com/videos/play/wwdc2017/717/).
-
-## Native Mac pairing app
-
-If the CLI pairing helper times out at numeric confirmation, build and launch
-Apple's GUI pairing flow from a real app bundle:
+2. Start the receiver, replacing the address and credential paths:
 
 ```sh
-./scripts/mac-pairing/build.sh "$PWD/build/iAP2-Pairing.app"
-open ./build/iAP2-Pairing.app
+python3 scripts/carplay.py --receiver --hotspot \
+  --address AA:BB:CC:DD:EE:FF \
+  --mfi-cert /absolute/path/to/certificate.p7b \
+  --mfi-key /absolute/path/to/identity.pk8
 ```
 
-Keep the iPhone Bluetooth settings open, choose the phone in Apple's dialog, and
-approve matching codes. The app checks both `isPaired` and membership in the
-saved device list; it writes `pairing-app-result.log` beside the app bundle.
-The bundle has its own local identity and Bluetooth usage descriptions and is
-ad-hoc signed. It uses IOBluetoothUI's IOBluetoothPairingController instead of
-the CLI's direct IOBluetoothDevicePair callbacks. This GUI route established a
-saved bond with the development iPhone on 30 October 2026 after CLI timeouts.
-The current diagnostic check is scoped to the development phone's address;
-update `scripts/mac-pairing/main.m` for another device before building.
+The terminal asks for the **existing hotspot password with input hidden**.
+It detects this Mac's Bluetooth address and the hotspot's actual IP/channel.
+`CARPLAY_WIFI_PASSPHRASE` can supply the password instead; avoid placing a real
+password in a command that will be saved to shell history.
 
-## Authentication-only live probe
+If the phone is not bonded, the launcher builds and opens Apple's native
+pairing app. Select the intended iPhone and accept matching codes. If the Mac
+does not list the phone, keep the Mac's Bluetooth settings and pairing dialog
+open, then select the Mac under **Other Devices** on the iPhone. This route
+established the test bond. The helper app exits after the pairing dialog so
+it does not keep scanning during receiver startup.
 
-After establishing a Bluetooth bond, `--auth-only --address PHONE --mfi-cert
-FILE --mfi-key FILE [--bt-bridge PATH]` runs the real link and MFi exchange and
-exits after the phone sends AuthenticationSucceeded. It defers Wi-Fi handoff.
-MFi v3 signing accepts the 32-byte digest directly; the certificate response
-preserves the DER PKCS#7 container. This probe passed against the development
-iPhone on 30 October 2026. Passing it does not validate AirPlay or media.
+Accept **Use CarPlay** on the iPhone when offered. The Bluetooth protocol
+sends the hotspot invitation; video then uses Wi-Fi. The Mac window initially
+says it is waiting for video and updates when decoded frames arrive.
+
+For subsequent runs, use the same command and credentials. The saved Bluetooth
+bond and local AirPlay trust state are reused. Switching iPhones requires the
+new phone's address and its own pairing/CarPlay approval; you do not need to
+remove the previous phone's pairing.
+
+## Diagnostics and stopping
+
+- CLI numeric pairing (`--cli-pair`) returned `0x1f` in testing; the native
+  pairing controller is the demonstrated successful route.
+- If logs report `OI_RFCOMM_Connect` status 911, an earlier channel may still
+  exist. Close the old receiver first. An iPhone Bluetooth off/on cycle cleared
+  this condition in testing without removing the saved bond.
+- Do not pipe `bt-bridge` into `--capture --address`: that mode already creates
+  a full-duplex child bridge. Capture collects traffic; it does not start video.
+- Close diagnostic Safari tabs pointed at the receiver before a CarPlay test.
+- Close the receiver window or press Ctrl-C in its terminal to stop it. The
+  launcher cleans up its own bridge and Bonjour child processes. Close an older
+  manually launched receiver before starting another. Internet Sharing stays
+  enabled until you turn it off.
+
+AirPlay identity/controller trust is stored under the user's Application
+Support directory. `CARPLAY_PAIRING_FILE` overrides it. Keep that file private.
+
+## Screenshots and publication
+
+The screenshot above is an actual capture supplied from the working session.
+See [screenshot capture instructions](docs/screenshots/README.md) for additional
+window-only captures. No mockups are presented as live output.
+Credentials, local trust files, packet captures, logs and build outputs are
+excluded from version control. Review screenshot content before publishing.
+
+## References and implementation history
+
+- [Current validation and project status](STATUS.md)
+- [Earlier development notes](docs/DEVELOPMENT.md)
+- [PlayPort bridge attribution and licence](third_party/playport-bt-bridge/README.md)
+- [Apple wireless CarPlay architecture](https://developer.apple.com/videos/play/wwdc2017/717/)

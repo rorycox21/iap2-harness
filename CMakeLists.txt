@@ -94,6 +94,17 @@ target_link_libraries(iap2-harness PRIVATE iap2_core iap2_transport iap2_core)
 if(APPLE)
   find_program(SWIFTC_EXECUTABLE swiftc REQUIRED)
   add_custom_command(
+    OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/bt-bridge"
+    COMMAND "${SWIFTC_EXECUTABLE}"
+      -module-cache-path "${CMAKE_CURRENT_BINARY_DIR}/SwiftBridgeModuleCache"
+      -O -o "${CMAKE_CURRENT_BINARY_DIR}/bt-bridge"
+      "${CMAKE_CURRENT_SOURCE_DIR}/third_party/playport-bt-bridge/main.swift"
+      -framework IOBluetooth
+    DEPENDS third_party/playport-bt-bridge/main.swift
+    VERBATIM)
+  add_custom_target(bluetooth_bridge ALL DEPENDS "${CMAKE_CURRENT_BINARY_DIR}/bt-bridge")
+
+  add_custom_command(
     OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/bt-accessory"
     COMMAND "${SWIFTC_EXECUTABLE}"
       -module-cache-path "${CMAKE_CURRENT_BINARY_DIR}/SwiftModuleCache"

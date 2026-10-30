@@ -66,6 +66,7 @@ private:
     std::map<std::uint64_t, std::unique_ptr<AudioStreamReceiver>> audio_streams_;
     std::uint64_t screen_frame_count_ = 0;
     std::string recv_buf_;
+    std::string response_cseq_;
     fxchain::airplay::Bytes encrypted_recv_buf_;
     fxchain::airplay::Bytes control_read_key_;
     fxchain::airplay::Bytes control_write_key_;

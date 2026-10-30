@@ -24,6 +24,11 @@ bool TcpTransport::connect(const std::string& host, std::uint16_t port, int time
     close();
     fd_ = ::socket(AF_INET, SOCK_STREAM, 0);
     if (fd_ < 0) { std::perror("socket"); return false; }
+    // The Bluetooth bridge is fork/exec'd after listener readiness. It must
+    // not inherit this socket and keep the port bound after the session ends.
+    if (fcntl(fd_, F_SETFD, FD_CLOEXEC) < 0) {
+        std::perror("fcntl FD_CLOEXEC"); close(); return false;
+    }
 
     sockaddr_in sa{};
     sa.sin_family = AF_INET;
@@ -75,6 +80,11 @@ bool TcpTransport::listen(const std::string& bind_addr, std::uint16_t port, int 
     close();
     fd_ = ::socket(AF_INET, SOCK_STREAM, 0);
     if (fd_ < 0) { std::perror("socket"); return false; }
+    // The Bluetooth bridge is fork/exec'd after listener readiness. It must
+    // not inherit this socket and keep the port bound after the session ends.
+    if (fcntl(fd_, F_SETFD, FD_CLOEXEC) < 0) {
+        std::perror("fcntl FD_CLOEXEC"); close(); return false;
+    }
     set_reuse(fd_);
 
     sockaddr_in sa{};
@@ -121,6 +131,10 @@ bool TcpTransport::listen(const std::string& bind_addr, std::uint16_t port, int 
         std::perror("accept");
         close();
         return false;
+    }
+    if (fcntl(client, F_SETFD, FD_CLOEXEC) < 0) {
+        std::perror("fcntl accepted FD_CLOEXEC");
+        ::close(client); close(); return false;
     }
     // Close the listening socket; keep only the accepted one.
     ::close(fd_);
