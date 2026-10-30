@@ -1,0 +1,16 @@
+# Keep local builds, captures, and accessory credentials out of source control.
+/build/
+/captures/
+/identity/
+.DS_Store
+
+# MFi identity and certificate material.
+*.pk8
+*.p7b
+*.pem
+*.key
+*.p12
+*.pfx
+*.der
+*.crt
+*.cer
