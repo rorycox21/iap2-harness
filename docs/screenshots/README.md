@@ -14,3 +14,8 @@ With the live receiver running:
 receiver and its terminal session, captured on 30 October 2026. It is embedded
 in the root README without retouching. No mockup or placeholder image is
 presented as working-product evidence.
+
+`carplay-home.png` is the user-supplied live window capture from 31 October
+2026, following the video framing/decoder fixes and the user's confirmation
+that output looks cleaner. It is the current README lead image, published
+without retouching. The original capture remains available for comparison.

@@ -1,8 +1,19 @@
 # Project status
 
+## Latest screenshot and remaining work — 31 October 2026
+
+The README now shows the user-supplied post-fix live capture in
+`docs/screenshots/carplay-home.png`. The original terminal-and-window capture
+is retained for comparison. See [CHANGELOG.md](CHANGELOG.md) for the changes
+and the README remaining-work list for current implementation gaps. Typed
+Now Playing, power, communications and call-state handlers are pending;
+receiving their message IDs does not mean their contents are implemented.
+The sections below are a chronological development log; older statements
+about unverified video describe the state at that earlier checkpoint.
+
 ## Portability and video refactor — 31 October 2026
 
-Work is on `refactor/platform-backends`. Protocol/session code now receives a
+The portability/video changes are included in the published source. Protocol/session code now receives a
 media backend; Apple UI/audio frameworks are linked only by the macOS adapter.
 Headless and custom-backend build options, optional USB/Swift helpers, portable
 trust-state paths, configurable display geometry, and external discovery/helper

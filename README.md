@@ -4,10 +4,11 @@ An experimental macOS wireless CarPlay receiver with a native video window.
 Live iPhone video was confirmed on 30 October 2026 using a Mac-hosted Wi-Fi
 hotspot and an outgoing Bluetooth iAP2 connection.
 
-![Live CarPlay running in the native macOS receiver window](docs/screenshots/carplay-live.png)
+![Live CarPlay app grid after the video framing fixes](docs/screenshots/carplay-home.png)
 
-*Actual live session on macOS, 30 October 2026. The terminal shows the encrypted
-AirPlay control session alongside the CarPlay app grid.*
+*User-supplied live macOS capture, 31 October 2026, after the video framing
+fixes. The user confirmed cleaner output after restarting the receiver.
+[Original 30 October capture](docs/screenshots/carplay-live.png).*
 
 Verified: Bluetooth link, MFi authentication, accessory identification, Wi-Fi
 handoff, AirPlay pairing and encrypted control, H.264 receive/decode/display.
@@ -25,6 +26,28 @@ The video pipeline now parses NAL lengths explicitly and preserves decoder
 state across duplicate codec configuration. This addresses a framing bug that
 could cause blocky corruption. High-resolution display settings are optional;
 the default stays 1024×600. The test user reported cleaner output after a live restart on 31 October 2026.
+
+## Latest changes — 31 October 2026
+
+- Separated protocol/session code from native video, audio and touch backends.
+- Added headless and custom backend builds, optional USB/macOS helpers, portable
+  trust-state paths and configurable display geometry.
+- Fixed ambiguous H.264 NAL framing, unnecessary decoder resets, stale frame
+  callbacks and per-frame image ownership; live output looks cleaner.
+- Added the updated live screenshot above. See [change notes](CHANGELOG.md)
+  and [porting instructions](docs/PORTING.md).
+
+## Remaining work
+
+- Typed handling of Now Playing (`0x5001`), power (`0xAE01`), communications
+  (`0x4158`) and call state (`0x4155`) is still pending. These messages are
+  currently ignored outside the authentication state machine.
+- Microphone/Siri input, iDrive/knob/media/telephony controls and native
+  Linux/Pi or QNX/NBT hardware backends need implementation.
+- True wired CarPlay needs USB role switching and networking; the experimental
+  libusb transport does not provide a wired CarPlay session.
+- Audio playback and touch need live validation. Reconnect recovery and
+  automatic hotspot creation remain incomplete.
 
 ## Requirements
 
