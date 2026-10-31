@@ -13,6 +13,19 @@ Verified: Bluetooth link, MFi authentication, accessory identification, Wi-Fi
 handoff, AirPlay pairing and encrypted control, H.264 receive/decode/display.
 Audio and touch are implemented but were not validated in this live session.
 
+## Platform selection and image quality
+
+The current refactor separates the protocol engine from video, PCM audio and
+input backends. macOS remains the working native implementation. A headless
+backend and a custom-backend build hook are available for port development;
+Pi/Linux and QNX native hardware adapters are not implemented yet.
+See [the porting guide](docs/PORTING.md) for build switches and the backend API.
+
+The video pipeline now parses NAL lengths explicitly and preserves decoder
+state across duplicate codec configuration. This addresses a framing bug that
+could cause blocky corruption. High-resolution display settings are optional;
+the default stays 1024×600. The test user reported cleaner output after a live restart on 31 October 2026.
+
 ## Requirements
 
 - macOS, Xcode Command Line Tools, Swift, CMake, Python 3 and Homebrew.

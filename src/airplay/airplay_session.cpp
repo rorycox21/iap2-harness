@@ -1,9 +1,7 @@
 #include "airplay/airplay_session.hpp"
 #include "airplay/auth_setup.hpp"
-#include "airplay/mac_video.hpp"
 #include "airplay_crypto.h"
 #include "airplay/tlv.hpp"
-#include "transport/tcp_transport.hpp"
 #include <algorithm>
 #include <chrono>
 #include <cstdio>
@@ -16,16 +14,18 @@ namespace bplist = fxchain::airplay::bplist;
 namespace airplay {
 
 AirPlaySession::AirPlaySession(transport::Transport& t, mfi::Signer& signer,
-                               log::ILogger& log, PairingProtocol* pairing)
-    : t_(t), signer_(signer), log_(log),
+                               log::ILogger& log, platform::MediaBackend& media, PairingProtocol* pairing)
+    : t_(t), signer_(signer), log_(log), media_(media),
       owned_pairing_(pairing ? nullptr : std::make_unique<PairingProtocol>()),
       pairing_(pairing ? pairing : owned_pairing_.get()) {}
 
 AirPlaySession::~AirPlaySession() {
+    media_.setTouchHandler({});
     if (screen_stream_) screen_stream_->close();
+    media_.resetVideo();
     for (auto& stream : audio_streams_) stream.second->close();
     audio_streams_.clear();
-    stopPcmAudioOutput();
+    media_.stopAudio();
     if (aux_channels_) aux_channels_->close();
 }
 
@@ -169,9 +169,10 @@ bool AirPlaySession::handleRequest(const std::string& method, const std::string&
         d.push_back({"keepAliveLowPower", bplist::Value::boolean(false)});
         d.push_back({"keepAliveSendStatsAsBody", bplist::Value::boolean(false)});
 
+        const auto geometry = media_.displayConfig();
         bplist::Dict area;
-        area.push_back({"widthPixels", bplist::Value::integer(1024)});
-        area.push_back({"heightPixels", bplist::Value::integer(600)});
+        area.push_back({"widthPixels", bplist::Value::integer(geometry.width)});
+        area.push_back({"heightPixels", bplist::Value::integer(geometry.height)});
         area.push_back({"originXPixels", bplist::Value::integer(0)});
         area.push_back({"originYPixels", bplist::Value::integer(0)});
         bplist::Dict safe_area = area;
@@ -180,11 +181,11 @@ bool AirPlaySession::handleRequest(const std::string& method, const std::string&
         bplist::Dict display;
         display.push_back({"uuid", bplist::Value::str("b7e6c5a0-1111-4000-8000-000000000001")});
         display.push_back({"type", bplist::Value::integer(110)});
-        display.push_back({"maxFPS", bplist::Value::integer(60)});
-        display.push_back({"widthPixels", bplist::Value::integer(1024)});
-        display.push_back({"heightPixels", bplist::Value::integer(600)});
-        display.push_back({"widthPhysical", bplist::Value::integer(300)});
-        display.push_back({"heightPhysical", bplist::Value::integer(176)});
+        display.push_back({"maxFPS", bplist::Value::integer(geometry.max_fps)});
+        display.push_back({"widthPixels", bplist::Value::integer(geometry.width)});
+        display.push_back({"heightPixels", bplist::Value::integer(geometry.height)});
+        display.push_back({"widthPhysical", bplist::Value::integer(geometry.physical_width_mm)});
+        display.push_back({"heightPhysical", bplist::Value::integer(geometry.physical_height_mm)});
         display.push_back({"features", bplist::Value::integer(10)});
         display.push_back({"primaryInputDevice", bplist::Value::integer(1)});
         display.push_back({"uiAppearanceMode", bplist::Value::integer(0)});
@@ -277,8 +278,8 @@ bool AirPlaySession::handleRequest(const std::string& method, const std::string&
                 9,49,129,2,192};
             touch_descriptor.insert(touch_descriptor.end(), std::begin(bytes), std::end(bytes));
         };
-        append_finger(1024, 600);
-        append_finger(1024, 600);
+        append_finger(geometry.width, geometry.height);
+        append_finger(geometry.width, geometry.height);
         touch_descriptor.push_back(192);
         const std::vector<std::uint8_t> knob_descriptor{
             5,1,9,8,161,1,5,9,9,1,21,0,37,1,117,1,149,1,129,2,5,12,10,35,
@@ -393,7 +394,7 @@ bool AirPlaySession::handleRequest(const std::string& method, const std::string&
                     return true;
                 }
                 std::weak_ptr<AirPlayAuxChannels> weak_channels = aux_channels_;
-                setVideoTouchHandler([weak_channels](bool down, std::uint16_t x,
+                media_.setTouchHandler([weak_channels](bool down, std::uint16_t x,
                                                      std::uint16_t y) {
                     if (const auto channels = weak_channels.lock())
                         (void)channels->sendTouch(down, x, y);
@@ -453,21 +454,21 @@ bool AirPlaySession::handleRequest(const std::string& method, const std::string&
                 case 2048: sample_rate = 44100; channels = 2; break;
                 default: continue;
                 }
-                if (!configurePcmAudioOutput(sample_rate, channels)) {
-                    log_.error("airplay: could not configure Mac PCM audio output");
+                if (!media_.configureAudio(sample_rate, channels)) {
+                    log_.error("airplay: selected media backend could not configure PCM audio output");
                     continue;
                 }
                 const auto connection_text = std::to_string(connection_value);
                 const auto key = fxchain::airplay::hkdfSha512(
                     "DataStream-Salt" + connection_text,
                     "DataStream-Output-Encryption-Key", pairing_->sharedSecret());
-                const auto* tcp = dynamic_cast<const transport::TcpTransport*>(&t_);
-                const std::string expected_peer = tcp ? tcp->peerAddress() : std::string{};
+                const std::string expected_peer = t_.peerAddress();
                 auto packet_count = std::make_shared<std::atomic<std::uint64_t>>(0);
                 auto audio = std::make_unique<AudioStreamReceiver>(
                     key, expected_peer,
-                    [this, packet_count, connection_text](const auto& rtp) {
-                        submitPcmAudioRtp(rtp);
+                    [this, packet_count, connection_text, channels](const auto& rtp) {
+                        const auto pcm = pcm16LeFromAirPlayRtp(rtp, channels);
+                        if (!pcm.empty()) media_.submitPcm16Le(pcm);
                         const auto count = ++(*packet_count);
                         if (count == 1 || count % 100 == 0)
                             log_.info("airplay: decrypted audio RTP stream=" +
@@ -500,20 +501,20 @@ bool AirPlaySession::handleRequest(const std::string& method, const std::string&
             const auto key = fxchain::airplay::hkdfSha512(
                 "DataStream-Salt" + connection_text,
                 "DataStream-Output-Encryption-Key", pairing_->sharedSecret());
-            const auto* tcp = dynamic_cast<const transport::TcpTransport*>(&t_);
-            const std::string expected_peer = tcp ? tcp->peerAddress() : std::string{};
+            const std::string expected_peer = t_.peerAddress();
             screen_stream_.reset();
+            media_.resetVideo();
             screen_frame_count_ = 0;
             screen_stream_ = std::make_unique<ScreenStreamReceiver>(
                 key, expected_peer,
                 [this](const std::string& codec, const fxchain::airplay::Bytes& config) {
                     log_.info("airplay: screen codec config " + codec + " (" +
                               std::to_string(config.size()) + " bytes)");
-                    configureVideoDisplay(codec, config);
+                    media_.configureVideo(codec, config);
                 },
                 [this](const fxchain::airplay::Bytes& frame, std::uint64_t,
                        std::uint64_t) {
-                    submitVideoFrame(frame);
+                    media_.submitVideo(frame);
                     ++screen_frame_count_;
                     if (screen_frame_count_ == 1 || screen_frame_count_ % 300 == 0)
                         log_.info("airplay: decrypted screen frame " +

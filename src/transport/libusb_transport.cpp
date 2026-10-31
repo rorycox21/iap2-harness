@@ -1,5 +1,5 @@
 #include "transport/transport.hpp"
-#include <libusb-1.0/libusb.h>
+#include <libusb.h>
 #include <cstdio>
 #include <cstring>
 
@@ -40,32 +40,30 @@ public:
             return false;
         }
 
-        // macOS: don't auto-detach; the kernel driver claiming the
-        // interface is usbmuxd, and detaching it will break Finder/iTunes.
-        // Fail with a clear message instead.
-        // iPhone exposes 6 USB configurations. The iAP2 accessory pipe
-        // (class 0xff / sub 0xfe / proto 0x02, bulk 0x04 out / 0x85 in)
-        // is on configuration 4 (and 5). The active config is usually 6,
-        // which is the USB MUX. Switch to config 4 if needed.
-        int active_cfg = 0;
-        libusb_get_configuration(handle_, &active_cfg);
-        if (active_cfg != 4) {
-            std::fprintf(stderr, "transport: switching config %d -> 4\n", active_cfg);
-            int sr = libusb_set_configuration(handle_, 4);
-            if (sr != 0) {
-                std::fprintf(stderr,
-                    "transport: set_configuration(4) failed: %s\n",
-                    libusb_error_name(sr));
-                // Non-fatal; try the claim anyway.
+        // Configuration/interface selection belongs to target-specific setup.
+        // Preserve the active configuration unless explicitly requested; never
+        // detach a system driver or assume iPhone configuration/interface IDs.
+        if (cfg_.configuration > 0) {
+            int active = 0;
+            const int status = libusb_get_configuration(handle_, &active);
+            if (status != 0) {
+                std::fprintf(stderr, "transport: get_configuration failed: %s\n", libusb_error_name(status));
+                return false;
+            }
+            if (active != cfg_.configuration) {
+                const int changed = libusb_set_configuration(handle_, cfg_.configuration);
+                if (changed != 0) {
+                    std::fprintf(stderr, "transport: set_configuration(%d) failed: %s\n", cfg_.configuration, libusb_error_name(changed));
+                    return false;
+                }
             }
         }
-        // Use interface 1 (vendor-specific iAP2), not 0 (USB MUX).
-        const int iface = 1;
+        const int iface = cfg_.interface_number;
         int r = libusb_claim_interface(handle_, iface);
         if (r == LIBUSB_ERROR_BUSY) {
             std::fprintf(stderr,
                 "transport: interface %d busy. On macOS this is usually "
-                "usbmuxd. Try: sudo pkill usbmuxd\n", cfg_.interface_number);
+                "a system driver. Select the intended free interface; no driver was detached.\n", cfg_.interface_number);
             return false;
         }
         if (r != 0) {
@@ -73,6 +71,7 @@ public:
                          cfg_.interface_number, libusb_error_name(r));
             return false;
         }
+        interface_claimed_ = true;
         std::fprintf(stderr, "transport: opened %04x:%04x if=%d ep_in=0x%02x ep_out=0x%02x\n",
                      cfg_.vid, cfg_.pid, cfg_.interface_number, cfg_.ep_in, cfg_.ep_out);
         return true;
@@ -104,7 +103,8 @@ public:
 
     void close() override {
         if (handle_) {
-            libusb_release_interface(handle_, 1);
+            if (interface_claimed_) libusb_release_interface(handle_, cfg_.interface_number);
+            interface_claimed_ = false;
             libusb_close(handle_);
             handle_ = nullptr;
         }
@@ -113,6 +113,7 @@ public:
 
 private:
     UsbConfig cfg_;
+    bool interface_claimed_ = false;
     libusb_context* ctx_ = nullptr;
     libusb_device_handle* handle_ = nullptr;
 };

@@ -14,6 +14,11 @@
 
 namespace airplay {
 
+// Convert the existing fixed-12-byte AirPlay PCM RTP packet format to
+// interleaved S16LE for all output backends. Empty means malformed/unsupported.
+fxchain::airplay::Bytes pcm16LeFromAirPlayRtp(const fxchain::airplay::Bytes& packet,
+                                            std::uint8_t channels);
+
 class AudioStreamReceiver {
 public:
     using PacketHandler = std::function<void(const fxchain::airplay::Bytes& rtp)>;

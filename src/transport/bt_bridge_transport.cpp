@@ -31,7 +31,7 @@ bool BtBridgeTransport::open() {
         ::dup2(output_pipe[1], STDOUT_FILENO);
         ::close(input_pipe[0]); ::close(input_pipe[1]);
         ::close(output_pipe[0]); ::close(output_pipe[1]);
-        ::execl(executable_.c_str(), executable_.c_str(), "--address",
+        ::execlp(executable_.c_str(), executable_.c_str(), "--address",
                 address_.c_str(), static_cast<char*>(nullptr));
         _exit(127);
     }

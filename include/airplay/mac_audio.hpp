@@ -9,7 +9,7 @@
 namespace airplay {
 
 bool configurePcmAudioOutput(std::uint32_t sample_rate, std::uint8_t channels);
-void submitPcmAudioRtp(const fxchain::airplay::Bytes& decrypted_rtp);
+void submitPcmAudio(const fxchain::airplay::Bytes& interleaved_s16le);
 void stopPcmAudioOutput();
 
 } // namespace airplay

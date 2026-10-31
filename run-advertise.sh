@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/bin/sh
 # Advertise the receiver as a CarPlay/AirPlay device on the local network.
 # Kill with Ctrl-C. The iPhone discovers it under Settings > General > CarPlay.
 #
@@ -14,13 +14,18 @@ DEVICE_NAME="${CARPLAY_NAME:-MacCarPlay}"
 MODEL="${CARPLAY_MODEL:-MacCarPlay,1}"
 AIRPLAY_PORT="${CARPLAY_AIRPLAY_PORT:-7000}"
 
-dns-sd -R "$DEVICE_NAME" "_airplay._tcp" local "$AIRPLAY_PORT" \
-  deviceid="$DEVICE_ID" \
-  features=0x615653AEE2 \
-  model="$MODEL" \
-  srcvers=950.7.1 \
-  flags=0x4 \
-  manufacturer=BMW &
+if command -v dns-sd >/dev/null 2>&1; then
+  dns-sd -R "$DEVICE_NAME" "_airplay._tcp" local "$AIRPLAY_PORT" \
+    deviceid="$DEVICE_ID" features=0x615653AEE2 model="$MODEL" \
+    srcvers=950.7.1 flags=0x4 manufacturer=BMW &
+elif command -v avahi-publish-service >/dev/null 2>&1; then
+  avahi-publish-service "$DEVICE_NAME" "_airplay._tcp" "$AIRPLAY_PORT" \
+    deviceid="$DEVICE_ID" features=0x615653AEE2 model="$MODEL" \
+    srcvers=950.7.1 flags=0x4 manufacturer=BMW &
+else
+  printf '%s\n' 'No Bonjour/Avahi publisher available. Use --advertise-script PATH or --no-advertise with external discovery.' >&2
+  exit 127
+fi
 AIRPLAY_PID=$!
 
 cleanup() {

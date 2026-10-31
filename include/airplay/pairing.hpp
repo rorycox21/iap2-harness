@@ -1,6 +1,6 @@
 // AirPlay HomeKit pairing state for pair-setup and pair-verify. The fixed
-// setup code follows local DiPlay source; live iPhone compatibility remains
-// UNVERIFIED until exercised against a real device.
+// setup code follows local DiPlay source. Pair-setup and pair-verify have
+// completed successfully with the development iPhone on macOS.
 #pragma once
 
 #include "airplay_crypto.h"

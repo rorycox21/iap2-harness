@@ -70,21 +70,14 @@ bool configurePcmAudioOutput(std::uint32_t sample_rate, std::uint8_t channels) {
     return true;
 }
 
-void submitPcmAudioRtp(const fxchain::airplay::Bytes& rtp) {
-    if (rtp.size() <= 12) return;
-    const std::size_t payload_size = rtp.size() - 12;
-    if ((payload_size & 1) != 0 || payload_size > 16384) return;
-
+void submitPcmAudio(const fxchain::airplay::Bytes& pcm) {
+    const std::size_t payload_size = pcm.size();
+    if (payload_size == 0 || (payload_size & 1) != 0 || payload_size > 16384) return;
     std::lock_guard<std::mutex> lock(g_audio.mutex);
     if (!g_audio.queue || g_audio.free_buffers.empty()) return;
     AudioQueueBufferRef buffer = g_audio.free_buffers.back();
     g_audio.free_buffers.pop_back();
-    auto* output = static_cast<std::uint8_t*>(buffer->mAudioData);
-    // DiPlay byte-swaps each signed 16-bit PCM sample before playback.
-    for (std::size_t i = 0; i < payload_size; i += 2) {
-        output[i] = rtp[13 + i];
-        output[i + 1] = rtp[12 + i];
-    }
+    std::memcpy(buffer->mAudioData, pcm.data(), payload_size);
     buffer->mAudioDataByteSize = static_cast<UInt32>(payload_size);
     if (AudioQueueEnqueueBuffer(g_audio.queue, buffer, 0, nullptr) != noErr) {
         g_audio.free_buffers.push_back(buffer);

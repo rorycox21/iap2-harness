@@ -20,7 +20,7 @@
 #include "transport/bt_bridge_transport.hpp"
 #include "transport/pipe_transport.hpp"
 #include "airplay/airplay_session.hpp"
-#include "airplay/mac_video.hpp"
+#include "platform/media_backend.hpp"
 #include "iap2/link_handshake.hpp"
 #include "iap2/identification.hpp"
 #include "iap2/control_messages.hpp"
@@ -101,15 +101,18 @@ static int run_simulate() {
 static void usage() {
     std::printf(
         "usage:\n"
+        "  iap2-harness --platform-info\n"
+        "  discovery: --no-advertise | --advertise-script PATH\n"
+        "  display: --display-width N --display-height N --max-fps N\n"
         "  iap2-harness --auth-only --address PHONE --mfi-cert FILE --mfi-key FILE [--bt-bridge PATH]\n"
         "  iap2-harness --simulate\n"
         "  iap2-harness --pipe\n"
         "  iap2-harness --capture --address PHONE [--bt-bridge PATH]\n"
         "  iap2-harness --address PHONE --mfi-cert FILE --mfi-key FILE [--bt-bridge PATH] [--bt-mac MAC] [--ssid NAME] [--wifi-channel N] [--wifi-security 0..4]\n"
         "  iap2-harness --receiver --address PHONE --mfi-cert FILE --mfi-key FILE --ssid NAME --wifi-ip ADDRESS [--bt-bridge PATH] [--bt-mac MAC] [--bind ADDRESS] [--port N]\n"
-        "  iap2-harness --vid 0xV --pid 0xP [--interface N] [--ep-in H] [--ep-out H]\n"
+        "  iap2-harness --vid 0xV --pid 0xP [--usb-config N] [--interface N] [--ep-in H] [--ep-out H]\n"
         "  iap2-harness --list\n"
-        "  iap2-harness --vid 0xV --pid 0xP [--interface N] [--ep-in H] [--ep-out H]\n");
+        "  iap2-harness --vid 0xV --pid 0xP [--usb-config N] [--interface N] [--ep-in H] [--ep-out H]\n");
 }
 
 
@@ -118,6 +121,7 @@ static void usage() {
 
 static void run_airplay_server(const std::string& bind_addr, std::uint16_t port,
                                std::shared_ptr<airplay::PairingProtocol> pairing,
+                               std::shared_ptr<platform::MediaBackend> media,
                                std::shared_ptr<std::promise<bool>> readiness = {},
                                std::shared_ptr<mfi::OpenSslSigner> mfi_signer = {}) {
     mfi::MockSigner mock_signer;
@@ -134,7 +138,7 @@ static void run_airplay_server(const std::string& bind_addr, std::uint16_t port,
             std::fprintf(stderr, "wireless: listen failed\n");
             return;
         }
-        airplay::AirPlaySession session(tcp, signer, log, pairing.get());
+        airplay::AirPlaySession session(tcp, signer, log, *media, pairing.get());
         const bool paired = session.run();
         tcp.close();
         std::fprintf(stderr, "wireless: connection ended, pairing_seen=%d; listening again\n",
@@ -143,15 +147,17 @@ static void run_airplay_server(const std::string& bind_addr, std::uint16_t port,
 }
 
 static int run_wireless(const std::string& bind_addr, std::uint16_t port,
-                        std::shared_ptr<airplay::PairingProtocol> pairing) {
-    return airplay::runVideoDisplayApplication([bind_addr, port, pairing] {
-        run_airplay_server(bind_addr, port, pairing);
+                        std::shared_ptr<airplay::PairingProtocol> pairing,
+                        std::shared_ptr<platform::MediaBackend> media) {
+    return media->run([bind_addr, port, pairing, media] {
+        run_airplay_server(bind_addr, port, pairing, media);
     });
 }
 
-static pid_t start_advertisement(const char* argv0, std::uint16_t port) {
-    std::filesystem::path script = std::filesystem::current_path() / "run-advertise.sh";
-    if (!std::filesystem::exists(script)) {
+static pid_t start_advertisement(const char* argv0, std::uint16_t port, const std::string& override_script) {
+    std::filesystem::path script = override_script.empty()
+        ? std::filesystem::current_path() / "run-advertise.sh" : std::filesystem::path(override_script);
+    if (override_script.empty() && !std::filesystem::exists(script)) {
         std::filesystem::path executable(argv0 ? argv0 : "");
         if (executable.has_parent_path())
             script = std::filesystem::absolute(executable).parent_path().parent_path() /
@@ -169,7 +175,7 @@ static pid_t start_advertisement(const char* argv0, std::uint16_t port) {
         return -1;
     }
     if (child == 0) {
-        ::execl("/bin/bash", "bash", script.c_str(), static_cast<char*>(nullptr));
+        ::execl("/bin/sh", "sh", script.c_str(), static_cast<char*>(nullptr));
         _exit(127);
     }
     return child;
@@ -187,6 +193,7 @@ static int run_live_iap2(transport::UsbConfig cfg, std::string phone_address,
                          std::uint16_t port,
                          std::shared_ptr<mfi::OpenSslSigner> signer,
                          std::shared_ptr<airplay::PairingProtocol> pairing,
+                         std::shared_ptr<platform::MediaBackend> media,
                          iap2::IdentificationConfig ident_cfg,
                          iap2::WirelessControlConfig wifi_cfg,
                          bool start_airplay_after_wifi, bool auth_only = false) {
@@ -195,7 +202,7 @@ static int run_live_iap2(transport::UsbConfig cfg, std::string phone_address,
     if (start_airplay_after_wifi) {
         auto readiness = std::make_shared<std::promise<bool>>();
         auto ready = readiness->get_future();
-        std::thread(run_airplay_server, bind_addr, port, pairing, readiness, signer).detach();
+        std::thread(run_airplay_server, bind_addr, port, pairing, media, readiness, signer).detach();
         if (ready.wait_for(std::chrono::seconds(5)) != std::future_status::ready || !ready.get()) {
             log::StderrLogger startup_log;
             startup_log.error("receiver: AirPlay listener could not start");
@@ -204,11 +211,6 @@ static int run_live_iap2(transport::UsbConfig cfg, std::string phone_address,
     }
     std::unique_ptr<transport::Transport> t;
     if (!phone_address.empty()) {
-        if (bt_bridge_path.empty()) {
-            const char* user_home = std::getenv("HOME");
-            bt_bridge_path = std::string(user_home ? user_home : "") +
-                "/Desktop/Projects/playport/macos/bt-bridge/bt-bridge";
-        }
         t = std::make_unique<transport::BtBridgeTransport>(bt_bridge_path, phone_address);
     } else {
         t = transport::make_libusb(cfg);
@@ -315,7 +317,7 @@ static int run_live_iap2(transport::UsbConfig cfg, std::string phone_address,
                 session.state() == iap2::AuthState::Succeeded && !airplay_started) {
                 auto readiness = std::make_shared<std::promise<bool>>();
                 auto ready = readiness->get_future();
-                std::thread(run_airplay_server, bind_addr, port, pairing, readiness, signer).detach();
+                std::thread(run_airplay_server, bind_addr, port, pairing, media, readiness, signer).detach();
                 if (ready.wait_for(std::chrono::seconds(5)) != std::future_status::ready ||
                     !ready.get()) {
                     std::fprintf(stderr, "handoff: AirPlay listener failed to bind; not sending start-session\n");
@@ -393,12 +395,7 @@ static int run_pipe() {
 
 static int run_bluetooth_capture(const std::string& executable,
                                  const std::string& address) {
-    const char* user_home = std::getenv("HOME");
-    const std::string bridge = executable.empty()
-        ? std::string(user_home ? user_home : "") +
-              "/Desktop/Projects/playport/macos/bt-bridge/bt-bridge"
-        : executable;
-    transport::BtBridgeTransport transport(bridge, address);
+    transport::BtBridgeTransport transport(executable, address);
     if (!transport.open()) {
         std::fprintf(stderr, "capture: could not start Bluetooth bridge\n");
         return 3;
@@ -435,6 +432,10 @@ static int run_bluetooth_capture(const std::string& executable,
 int main(int argc, char** argv) {
     transport::UsbConfig cfg;
     bool simulate = false;
+    bool platform_info = false;
+    platform::DisplayConfig display;
+    bool advertise_enabled = true;
+    std::string advertise_script;
     bool pipe_mode = false;
     bool capture_mode = false;
     bool wireless_mode = false;
@@ -455,7 +456,23 @@ int main(int argc, char** argv) {
             if (i + 1 >= argc) { std::fprintf(stderr, "%s needs a value\n", name); std::exit(2); }
             return argv[++i];
         };
-        if (a == "--auth-only") auth_only = true;
+        if (a == "--platform-info") platform_info = true;
+        else if (a == "--display-width" || a == "--display-height" || a == "--max-fps") {
+            const std::string text = next(a.c_str());
+            char* end = nullptr;
+            const long value = std::strtol(text.c_str(), &end, 10);
+            const long limit = a == "--max-fps" ? 60 : 4096;
+            if (text.empty() || !end || *end || value < 1 || value > limit) {
+                std::fprintf(stderr, "%s requires an integer in 1..%ld\n", a.c_str(), limit);
+                return 2;
+            }
+            if (a == "--display-width") display.width = static_cast<std::uint16_t>(value);
+            else if (a == "--display-height") display.height = static_cast<std::uint16_t>(value);
+            else display.max_fps = static_cast<std::uint16_t>(value);
+        }
+        else if (a == "--no-advertise") advertise_enabled = false;
+        else if (a == "--advertise-script") advertise_script = next("--advertise-script");
+        else if (a == "--auth-only") auth_only = true;
         else if (a == "--simulate") simulate = true;
         else if (a == "--pipe") pipe_mode = true;
         else if (a == "--capture") capture_mode = true;
@@ -478,6 +495,11 @@ int main(int argc, char** argv) {
         else if (a == "--wifi-security") wifi_cfg.security_type = static_cast<std::uint8_t>(std::atoi(next("--wifi-security")));
         else if (a == "--vid") cfg.vid = static_cast<std::uint16_t>(std::strtoul(next("--vid"), nullptr, 0));
         else if (a == "--pid") cfg.pid = static_cast<std::uint16_t>(std::strtoul(next("--pid"), nullptr, 0));
+        else if (a == "--usb-config") {
+            const int config = std::atoi(next("--usb-config"));
+            if (config < 0 || config > 255) { std::fprintf(stderr, "--usb-config requires 0..255\n"); return 2; }
+            cfg.configuration = config;
+        }
         else if (a == "--interface") cfg.interface_number = std::atoi(next("--interface"));
         else if (a == "--ep-in") cfg.ep_in = static_cast<unsigned char>(std::strtoul(next("--ep-in"), nullptr, 0));
         else if (a == "--ep-out") cfg.ep_out = static_cast<unsigned char>(std::strtoul(next("--ep-out"), nullptr, 0));
@@ -485,10 +507,30 @@ int main(int argc, char** argv) {
         else { std::fprintf(stderr, "unknown arg: %s\n", a.c_str()); usage(); return 2; }
     }
 
+    auto media = platform::createMediaBackend(display);
+    if (!media) { std::fprintf(stderr, "selected media backend could not be created\n"); return 3; }
+    if (platform_info) {
+        const auto caps = media->capabilities();
+        std::printf("media backend: %s\nvideo=%d pcm_audio=%d touch=%d\ndisplay=%ux%u max_fps=%u\n", media->name(), caps.video, caps.pcm_audio, caps.touch, display.width, display.height, display.max_fps);
+        return 0;
+    }
+    if (bt_bridge_path.empty()) {
+        if (const char* configured = std::getenv("CARPLAY_BT_BRIDGE"); configured && *configured)
+            bt_bridge_path = configured;
+        else {
+            const auto sibling = std::filesystem::absolute(argv[0]).parent_path() / "bt-bridge";
+            if (std::filesystem::exists(sibling)) bt_bridge_path = sibling.string();
+        }
+    }
+    if ((receiver_mode || capture_mode || !phone_address.empty()) && bt_bridge_path.empty()) {
+        std::fprintf(stderr, "No Bluetooth helper configured; pass --bt-bridge PATH or CARPLAY_BT_BRIDGE for this platform\n");
+        return 2;
+    }
+    if (wireless_mode || receiver_mode) std::fprintf(stderr, "media backend: %s\n", media->name());
+
     if (auth_only && receiver_mode) { std::fprintf(stderr, "--auth-only cannot be combined with --receiver\n"); return 2; }
     if (list) {
-        transport::list_usb_devices();
-        return 0;
+        return transport::list_usb_devices() < 0 ? 3 : 0;
     }
     if (wireless_mode) {
         auto pairing = std::make_shared<airplay::PairingProtocol>();
@@ -496,8 +538,8 @@ int main(int argc, char** argv) {
         ::setenv("CARPLAY_DEVICE_ID", resolved_device_id.c_str(), 1);
         if (ident_cfg.bluetooth_mac != "00:00:00:00:00:00")
             ::setenv("CARPLAY_BT_MAC", ident_cfg.bluetooth_mac.c_str(), 1);
-        const pid_t advertisement = start_advertisement(argv[0], port);
-        const int result = run_wireless(bind_addr, port, pairing);
+        const pid_t advertisement = advertise_enabled ? start_advertisement(argv[0], port, advertise_script) : -1;
+        const int result = run_wireless(bind_addr, port, pairing, media);
         stop_advertisement(advertisement);
         return result;
     }
@@ -549,16 +591,16 @@ int main(int argc, char** argv) {
         if (std::getenv("CARPLAY_BT_MAC") == nullptr &&
             ident_cfg.bluetooth_mac != "00:00:00:00:00:00")
             ::setenv("CARPLAY_BT_MAC", ident_cfg.bluetooth_mac.c_str(), 1);
-        const pid_t advertisement = start_advertisement(argv[0], port);
+        const pid_t advertisement = advertise_enabled ? start_advertisement(argv[0], port, advertise_script) : -1;
         std::fprintf(stderr, "receiver: sharing Wi-Fi network '%s'; set up the hotspot before launch\n",
                      wifi_cfg.ssid.c_str());
-        const int result = airplay::runVideoDisplayApplication(
+        const int result = media->run(
             [=] { (void)run_live_iap2(cfg, phone_address, bt_bridge_path,
-                    bind_addr, port, signer, pairing, ident_cfg, wifi_cfg, true); });
+                    bind_addr, port, signer, pairing, media, ident_cfg, wifi_cfg, true); });
         stop_advertisement(advertisement);
         return result;
     }
     return run_live_iap2(cfg, phone_address, bt_bridge_path, bind_addr, port,
-                         std::move(signer), {}, std::move(ident_cfg),
+                         std::move(signer), {}, media, std::move(ident_cfg),
                          std::move(wifi_cfg), false, auth_only);
 }

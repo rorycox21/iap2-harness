@@ -37,7 +37,7 @@ public:
     std::string localAddress() const;
 
     // The accepted peer address in server mode; empty for other states.
-    std::string peerAddress() const;
+    std::string peerAddress() const override;
 
 private:
     int fd_ = -1;

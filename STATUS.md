@@ -1,5 +1,23 @@
 # Project status
 
+## Portability and video refactor — 31 October 2026
+
+Work is on `refactor/platform-backends`. Protocol/session code now receives a
+media backend; Apple UI/audio frameworks are linked only by the macOS adapter.
+Headless and custom-backend build options, optional USB/Swift helpers, portable
+trust-state paths, configurable display geometry, and external discovery/helper
+selection form the porting boundary. Native Linux/Pi and QNX/NBT adapters still
+need implementation and target-device validation.
+
+The screen receiver now parses NAL lengths instead of guessing Annex-B framing
+from leading bytes; 256–511-byte NALs were ambiguous under the old heuristic.
+Regression tests cover that case. Duplicate Mac codec config no longer resets
+the decoder; old presentation callbacks are guarded and per-frame NSImage
+ownership is released. The test user restarted the Mac receiver and confirmed cleaner output.
+Mac, headless and custom-example backend configurations built and passed tests
+on the Mac. The custom example is explicitly a no-output skeleton; no Linux
+or QNX hardware implementation is implied.
+
 ## Live CarPlay video confirmed — 30 October 2026
 
 The user confirmed the CarPlay interface is visible in the native Mac receiver

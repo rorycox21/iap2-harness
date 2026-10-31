@@ -2,6 +2,7 @@
 // and labels follow the local DiPlay implementation and remain UNVERIFIED
 // against a live iPhone capture.
 #include "airplay/pairing.hpp"
+#include "platform/state_paths.hpp"
 
 #include <algorithm>
 #include <array>
@@ -108,14 +109,7 @@ bool takeBytes(const ac::Bytes& bytes, std::size_t& offset, std::size_t count,
     return true;
 }
 
-std::string defaultPersistencePath() {
-    if (const char* path = std::getenv("CARPLAY_PAIRING_FILE"); path && *path)
-        return path;
-    const char* home = std::getenv("HOME");
-    if (!home || !*home) return {};
-    return (std::filesystem::path(home) / "Library" / "Application Support" /
-            "iap2-harness" / "airplay-pairings.bin").string();
-}
+std::string defaultPersistencePath() { return platform::pairingStatePath(); }
 
 } // namespace
 

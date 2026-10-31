@@ -259,13 +259,113 @@ static void test_mfi_sap() {
 
 
 #include "airplay/airplay_session.hpp"
+#include "airplay/video_bitstream.hpp"
+class RecordingMedia : public platform::MediaBackend {
+public:
+    int resets = 0, stops = 0, touches = 0;
+    platform::DisplayConfig geometry{};
+    platform::DisplayConfig displayConfig() const override { return geometry; }
+    const char* name() const override { return "test"; }
+    platform::MediaCapabilities capabilities() const override { return {false, false, false}; }
+    int run(std::function<void()> task) override { task(); return 0; }
+    void resetVideo() override { ++resets; }
+    void configureVideo(const std::string&, const platform::Bytes&) override {}
+    void submitVideo(const platform::Bytes&) override {}
+    void setTouchHandler(platform::TouchHandler) override { ++touches; }
+    bool configureAudio(std::uint32_t, std::uint8_t) override { return false; }
+    void submitPcm16Le(const platform::Bytes&) override {}
+    void stopAudio() override { ++stops; }
+};
+
+static void test_portable_pcm_boundary() {
+    fxchain::airplay::Bytes rtp(12,0x80);
+    rtp.insert(rtp.end(), {0x12,0x34,0xfe,0xdc});
+    CHECK(airplay::pcm16LeFromAirPlayRtp(rtp,2) == fxchain::airplay::Bytes({0x34,0x12,0xdc,0xfe}));
+    CHECK(airplay::pcm16LeFromAirPlayRtp(rtp,1).size() == 4);
+    CHECK(airplay::pcm16LeFromAirPlayRtp(rtp,0).empty());
+    rtp.pop_back();
+    CHECK(airplay::pcm16LeFromAirPlayRtp(rtp,1).empty());
+    rtp.pop_back();
+    CHECK(airplay::pcm16LeFromAirPlayRtp(rtp,2).empty());
+    CHECK(airplay::pcm16LeFromAirPlayRtp(fxchain::airplay::Bytes(12),1).empty());
+}
+
+static void test_video_nal_framing() {
+    using Bytes = fxchain::airplay::Bytes;
+    // A 300-byte NAL begins 00 00 01 2c: the old auto-detection mistook
+    // those length bytes for an Annex-B start code and damaged the NAL header.
+    Bytes sample{0,0,1,44,0x65}; sample.resize(304,0x55);
+    const auto annex = airplay::lengthPrefixedToAnnexB(sample);
+    CHECK(annex.size() == sample.size());
+    CHECK(annex.size() > 4 && annex[3] == 1 && annex[4] == 0x65);
+    CHECK(airplay::annexBToLengthPrefixed(annex) == sample);
+    sample.insert(sample.end(), {0,0,0,2,0x41,0x80});
+    CHECK(airplay::annexBToLengthPrefixed(airplay::lengthPrefixedToAnnexB(sample)) == sample);
+    CHECK(airplay::lengthPrefixedToAnnexB({0,0,1,44,0x65}).empty());
+    CHECK(airplay::lengthPrefixedToAnnexB({0,0,0,0}).empty());
+    CHECK(airplay::lengthPrefixedToAnnexB({0,0}).empty());
+    CHECK(airplay::lengthPrefixedToAnnexB(sample,0).empty());
+    CHECK(airplay::lengthPrefixedToAnnexB(sample,5).empty());
+    CHECK(airplay::lengthPrefixedToAnnexB({0,3,0x65,0x55,0x44},2) == Bytes({0,0,0,1,0x65,0x55,0x44}));
+    CHECK(airplay::annexBToLengthPrefixed({0,0,1,0x65,0x55}) == Bytes({0,0,0,2,0x65,0x55}));
+    CHECK(airplay::annexBToLengthPrefixed({0x44,0,0,1,0x65}).empty());
+}
+
 #include <filesystem>
 #include <unistd.h>
+static void test_backend_display_info() {
+    char directory[] = "/tmp/iap2-display-test-XXXXXX";
+    const char* temporary = ::mkdtemp(directory);
+    CHECK(temporary != nullptr);
+    if (!temporary) return;
+    {
+        airplay::PairingProtocol pairing(std::string(temporary) + "/identity.bin");
+        RecordingMedia media;
+        media.geometry.width = 1280;
+        media.geometry.height = 750;
+        media.geometry.max_fps = 30;
+        PhoneCaptureTransport transport;
+        const std::string request = "GET /info RTSP/1.0\r\nCSeq: 42\r\nContent-Length: 0\r\n\r\n";
+        transport.bytes.assign(request.begin(), request.end());
+        transport.chunk = 4096;
+        mfi::MockSigner signer;
+        log::BufferLogger logger;
+        airplay::AirPlaySession session(transport, signer, logger, media, &pairing);
+        CHECK(!session.run());
+        CHECK(transport.writes.size() == 1);
+        if (transport.writes.size() == 1) {
+            const auto& bytes = transport.writes.front();
+            const std::string wire(bytes.begin(), bytes.end());
+            const auto start = wire.find("\r\n\r\n");
+            CHECK(start != std::string::npos);
+            if (start != std::string::npos) {
+                const auto info = fxchain::airplay::bplist::decode(fxchain::airplay::Bytes(bytes.begin() + start + 4, bytes.end()));
+                CHECK(info.has_value());
+                if (info) {
+                    const auto* displays = info->find("displays");
+                    CHECK(displays && displays->arr.size() == 1);
+                    if (displays && displays->arr.size() == 1) {
+                        const auto& screen = displays->arr.front();
+                        CHECK(screen.find("widthPixels") && screen.find("widthPixels")->i == 1280);
+                        CHECK(screen.find("heightPixels") && screen.find("heightPixels")->i == 750);
+                        CHECK(screen.find("maxFPS") && screen.find("maxFPS")->i == 30);
+                        const auto* areas = screen.find("viewAreas");
+                        CHECK(areas && areas->arr.size() == 1 && areas->arr.front().find("widthPixels")->i == 1280);
+                    }
+                }
+            }
+        }
+    }
+    std::filesystem::remove_all(temporary);
+}
+
+
 static void test_phone_record_request() {
     char directory[] = "/tmp/iap2-rtsp-test-XXXXXX";
     const char* temporary = ::mkdtemp(directory);
     CHECK(temporary != nullptr);
     if (!temporary) return;
+    RecordingMedia media;
     {
         airplay::PairingProtocol pairing(std::string(temporary) + "/identity.bin");
         PhoneCaptureTransport transport;
@@ -276,7 +376,7 @@ static void test_phone_record_request() {
         transport.chunk = 7;
         mfi::MockSigner signer;
         log::BufferLogger logger;
-        airplay::AirPlaySession session(transport, signer, logger, &pairing);
+        airplay::AirPlaySession session(transport, signer, logger, media, &pairing);
         CHECK(!session.run());
         CHECK(transport.writes.size() == 2);
         if (transport.writes.size() == 2) {
@@ -287,10 +387,14 @@ static void test_phone_record_request() {
             CHECK(options.find("CSeq: 9\r\n") != std::string::npos);
         }
     }
+    CHECK(media.stops == 1 && media.resets == 1 && media.touches == 1);
     std::filesystem::remove_all(temporary);
 }
 
 int main() {
+    test_portable_pcm_boundary();
+    test_backend_display_info();
+    test_video_nal_framing();
     test_phone_record_request();
     test_mfi_sap();
     test_live_phone_handshake();

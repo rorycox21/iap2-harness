@@ -23,3 +23,7 @@ secrets/
 *.log
 *.pcap
 *.pcapng
+
+# Alternate platform build trees
+build-*/
+cmake-build-*/

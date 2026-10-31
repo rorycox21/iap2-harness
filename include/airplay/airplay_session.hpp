@@ -3,7 +3,7 @@
 #include "mfi/signer.hpp"
 #include "airplay/pairing.hpp"
 #include "airplay/audio_stream.hpp"
-#include "airplay/mac_audio.hpp"
+#include "platform/media_backend.hpp"
 #include "airplay/screen_stream.hpp"
 #include "airplay/aux_channels.hpp"
 #include "airplay_crypto.h"
@@ -35,7 +35,7 @@ namespace airplay {
 class AirPlaySession {
 public:
     AirPlaySession(transport::Transport& t, mfi::Signer& signer, log::ILogger& log,
-                   PairingProtocol* pairing = nullptr);
+                   platform::MediaBackend& media, PairingProtocol* pairing = nullptr);
     ~AirPlaySession();
 
     // Run one RTSP connection until the peer closes or an error occurs.
@@ -59,6 +59,7 @@ private:
     transport::Transport& t_;
     mfi::Signer& signer_;
     log::ILogger& log_;
+    platform::MediaBackend& media_;
     std::unique_ptr<PairingProtocol> owned_pairing_;
     PairingProtocol* pairing_ = nullptr;
     std::shared_ptr<AirPlayAuxChannels> aux_channels_;

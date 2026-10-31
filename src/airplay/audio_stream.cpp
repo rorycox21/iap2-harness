@@ -14,6 +14,19 @@
 namespace airplay {
 namespace ac = fxchain::airplay;
 
+fxchain::airplay::Bytes pcm16LeFromAirPlayRtp(const fxchain::airplay::Bytes& packet,
+                                            std::uint8_t channels) {
+    if ((channels != 1 && channels != 2) || packet.size() <= 12) return {};
+    const auto size = packet.size() - 12;
+    if (size > 16384 || size % (channels * 2) != 0) return {};
+    fxchain::airplay::Bytes pcm(size);
+    for (std::size_t i = 0; i < size; i += 2) {
+        pcm[i] = packet[13 + i];
+        pcm[i + 1] = packet[12 + i];
+    }
+    return pcm;
+}
+
 namespace {
 int bindUdp(std::uint16_t& port) {
     const int fd = ::socket(AF_INET6, SOCK_DGRAM, 0);

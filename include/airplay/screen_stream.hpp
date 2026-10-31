@@ -1,6 +1,6 @@
 // Receives the encrypted CarPlay screen stream described by the local DiPlay
-// source. Header layout, opcodes, key derivation, and framing are UNVERIFIED
-// against a live iPhone capture.
+// source. H.264 decryption/display has been validated on macOS; other
+// output platforms and H.265 remain to be validated.
 #pragma once
 
 #include "airplay_crypto.h"
@@ -50,6 +50,7 @@ private:
     std::thread worker_;
     std::atomic<bool> closing_{false};
     std::uint64_t frame_counter_ = 0;
+    unsigned nal_length_bytes_ = 4;
 };
 
 } // namespace airplay

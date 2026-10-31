@@ -1,7 +1,7 @@
 // Encrypted CarPlay screen stream receiver based on the local DiPlay
-// implementation. The framing and cryptographic fields remain UNVERIFIED
-// until exercised against a live iPhone.
+// implementation. H.264 framing/decryption has been exercised with a live iPhone.
 #include "airplay/screen_stream.hpp"
+#include "airplay/video_bitstream.hpp"
 
 #include <algorithm>
 #include <array>
@@ -41,11 +41,6 @@ std::uint32_t readLe32(const std::uint8_t* p) {
            (std::uint32_t(p[2]) << 16) | (std::uint32_t(p[3]) << 24);
 }
 
-std::uint32_t readBe32(const std::uint8_t* p) {
-    return (std::uint32_t(p[0]) << 24) | (std::uint32_t(p[1]) << 16) |
-           (std::uint32_t(p[2]) << 8) | std::uint32_t(p[3]);
-}
-
 std::uint64_t readLe64(const std::uint8_t* p) {
     std::uint64_t v = 0;
     for (int i = 7; i >= 0; --i) v = (v << 8) | p[i];
@@ -55,24 +50,6 @@ std::uint64_t readLe64(const std::uint8_t* p) {
 std::uint64_t monotonicNanos() {
     return static_cast<std::uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(
         std::chrono::steady_clock::now().time_since_epoch()).count());
-}
-
-ac::Bytes toAnnexB(const ac::Bytes& payload) {
-    if (payload.size() >= 4 && payload[0] == 0 && payload[1] == 0 &&
-        (payload[2] == 1 || (payload[2] == 0 && payload[3] == 1)))
-        return payload;
-    ac::Bytes out;
-    std::size_t offset = 0;
-    while (offset + 4 <= payload.size()) {
-        const auto n = readBe32(payload.data() + offset);
-        offset += 4;
-        if (n == 0 || n > payload.size() - offset) return {};
-        out.insert(out.end(), {0, 0, 0, 1});
-        out.insert(out.end(), payload.begin() + offset, payload.begin() + offset + n);
-        offset += n;
-    }
-    if (offset != payload.size()) return {};
-    return out;
 }
 
 std::pair<std::string, ac::Bytes> detectConfig(const ac::Bytes& body) {
@@ -191,6 +168,9 @@ bool ScreenStreamReceiver::onMessage(const ac::Bytes& header, const ac::Bytes& b
     if (header.size() != kHeaderSize) return false;
     if (header[4] == kVideoConfig) {
         auto config = detectConfig(body);
+        const auto index = config.first == "H264" ? 4u : 21u;
+        if (config.second.size() <= index) return false;
+        nal_length_bytes_ = (config.second[index] & 3u) + 1u;
         if (on_config_) on_config_(config.first, config.second);
         return true;
     }
@@ -201,7 +181,7 @@ bool ScreenStreamReceiver::onMessage(const ac::Bytes& header, const ac::Bytes& b
         ac::Bytes(header.begin(), header.end()));
     ++frame_counter_;
     if (!plain) return false;
-    auto annex_b = toAnnexB(*plain);
+    auto annex_b = lengthPrefixedToAnnexB(*plain, nal_length_bytes_);
     if (annex_b.empty()) return false;
     const std::uint64_t q32 = readLe64(header.data() + 8);
     const std::uint64_t sender = (q32 >> 32) * 1000000000ULL +
